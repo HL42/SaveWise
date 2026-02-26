@@ -1,0 +1,16 @@
+/* 填满视口，兼容 iPhone 12+ 及刘海/灵动岛 */
+html {
+  min-height: 100%;
+  min-height: 100dvh;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+#root {
+  min-height: 100%;
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
