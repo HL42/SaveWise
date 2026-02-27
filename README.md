@@ -5,8 +5,6 @@
 URL: https://save-wise-theta.vercel.app/
 
 <img width="471" height="953" alt="Screenshot 2026-02-26 at 8 44 10 PM" src="https://github.com/user-attachments/assets/0c9916be-0e20-43ec-8228-9fef62a01f8c" />
-<img width="471" height="953" alt="Screenshot 2026-02-26 at 8 44 10 PM" src="https://github.com/user-attachments/assets/0c9916be-0e20-43ec-8228-9fef62a01f8c" />
-
 
 ---
 
