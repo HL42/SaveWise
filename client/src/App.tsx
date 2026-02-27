@@ -7,6 +7,8 @@ import type { Language } from "./locales";
 const API_BASE = "https://savewise-backend.onrender.com";
 const SAVING_GOAL_STORAGE_KEY = "savewise_saving_goal";
 const DEFAULT_SAVING_GOAL = 10000;
+const USER_ID_STORAGE_KEY = "savewise_user_id";
+const PRIVATE_PASSCODE = "42";
 
 type Currency = "CAD" | "CNY";
 type AccountType = "asset" | "liability";
@@ -54,6 +56,13 @@ const convertAmount = (amount: number, from: Currency, to: Currency, cadToCny: n
 
 const App: React.FC = () => {
   const [isDark, setIsDark] = useState(false);
+  const [userId, setUserId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const cached = window.localStorage.getItem(USER_ID_STORAGE_KEY);
+    return cached && cached.trim().length > 0 ? cached : null;
+  });
+  const [authInput, setAuthInput] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
   const [language, setLanguage] = useState<Language>("zh");
   const [backendHealthy, setBackendHealthy] = useState<boolean | null>(null);
   const [accountsFromApi, setAccountsFromApi] = useState<BackendAccount[]>([]);
@@ -89,22 +98,22 @@ const App: React.FC = () => {
   const [roastData, setRoastData] = useState<AnalyzeResponse | null>(null);
   const t = useCallback((key: keyof typeof locales.zh) => locales[language][key], [language]);
 
+  const apiFetch = useCallback(
+    (path: string, init: RequestInit = {}) => {
+      if (!userId) throw new Error(t("errAuthRequired"));
+      const headers = new Headers(init.headers ?? {});
+      headers.set("x-user-id", userId);
+      return fetch(`${API_BASE}${path}`, { ...init, headers });
+    },
+    [userId, t]
+  );
+
   const fetchAccounts = useCallback(async (): Promise<BackendAccount[] | null> => {
+    if (!userId) return null;
     try {
-      const res = await fetch(`${API_BASE}/api/accounts`);
+      const res = await apiFetch("/api/accounts");
       if (!res.ok) throw new Error("Failed to load accounts");
       const data: AccountsResponse = await res.json();
-
-      if (data.accounts.length === 0) {
-        await fetch(`${API_BASE}/api/init-accounts`);
-        const retry = await fetch(`${API_BASE}/api/accounts`);
-        if (!retry.ok) return null;
-        const retryData: AccountsResponse = await retry.json();
-        setAccountsFromApi(retryData.accounts);
-        setCadToCnyRate(retryData.fx.cadToCny);
-        return retryData.accounts;
-      }
-
       setAccountsFromApi(data.accounts);
       setCadToCnyRate(data.fx.cadToCny);
       return data.accounts;
@@ -112,7 +121,7 @@ const App: React.FC = () => {
       console.error(e);
       return null;
     }
-  }, []);
+  }, [apiFetch, userId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -141,20 +150,26 @@ const App: React.FC = () => {
   }, []);
 
   const fetchMonthlyStats = useCallback(async () => {
+    if (!userId) return;
     try {
-      const res = await fetch(`${API_BASE}/api/stats/monthly`);
+      const res = await apiFetch("/api/stats/monthly");
       if (!res.ok) return;
       const data: MonthlyStats = await res.json();
       setMonthlyStats(data);
     } catch {
       // ignore
     }
-  }, []);
+  }, [apiFetch, userId]);
 
   useEffect(() => {
+    if (!userId) {
+      setBackendHealthy(null);
+      setAccountsFromApi([]);
+      return;
+    }
     const init = async () => {
       try {
-        const healthRes = await fetch(`${API_BASE}/health`);
+        const healthRes = await apiFetch("/health");
         setBackendHealthy(healthRes.ok);
         if (!healthRes.ok) return;
         await fetchAccounts();
@@ -165,7 +180,7 @@ const App: React.FC = () => {
       }
     };
     init();
-  }, [fetchAccounts, fetchMonthlyStats]);
+  }, [apiFetch, fetchAccounts, fetchMonthlyStats, userId]);
 
   const accounts = useMemo(() => {
     const orderMap = new Map(CORE_ORDER.map((name, i) => [name, i]));
@@ -206,12 +221,16 @@ const App: React.FC = () => {
 
   const handleSend = async () => {
     if (!input.trim() || isSending) return;
+    if (!userId) {
+      setError(t("errAuthRequired"));
+      return;
+    }
     setIsSending(true);
     setError(null);
 
     try {
       const prev = [...accountsFromApi];
-      const res = await fetch(`${API_BASE}/api/record`, {
+      const res = await apiFetch("/api/record", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: input.trim() }),
@@ -265,6 +284,10 @@ const App: React.FC = () => {
 
   const confirmReconcile = async () => {
     if (!reconcileAccount) return;
+    if (!userId) {
+      setError(t("errAuthRequired"));
+      return;
+    }
     const num = parseFloat(reconcileInput);
     if (Number.isNaN(num)) return;
 
@@ -290,7 +313,7 @@ const App: React.FC = () => {
 
     setIsReconciling(true);
     try {
-      const res = await fetch(`${API_BASE}/api/accounts/${encodeURIComponent(reconcileAccount)}`, {
+      const res = await apiFetch(`/api/accounts/${encodeURIComponent(reconcileAccount)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -311,6 +334,10 @@ const App: React.FC = () => {
   };
 
   const createCreditCard = async () => {
+    if (!userId) {
+      setError(t("errAuthRequired"));
+      return;
+    }
     const name = newCardName.trim();
     const bal = Number(newCardBalance);
     const due = newCardDueDate.trim() === "" ? undefined : Number(newCardDueDate);
@@ -326,7 +353,7 @@ const App: React.FC = () => {
     setIsCreatingCard(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/accounts`, {
+      const res = await apiFetch("/api/accounts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -374,11 +401,15 @@ const App: React.FC = () => {
   };
 
   const handleAnalyze = async () => {
+    if (!userId) {
+      setError(t("errAuthRequired"));
+      return;
+    }
     setIsRoastOpen(true);
     setIsAnalyzing(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/analyze`, { method: "POST" });
+      const res = await apiFetch("/api/analyze", { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error || t("errAnalyzeFailed"));
@@ -391,6 +422,27 @@ const App: React.FC = () => {
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const enterPrivateSpace = () => {
+    if (authInput.trim() !== PRIVATE_PASSCODE) {
+      setAuthError(t("passcodeInvalid"));
+      return;
+    }
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(USER_ID_STORAGE_KEY, PRIVATE_PASSCODE);
+    }
+    setAuthError(null);
+    setUserId(PRIVATE_PASSCODE);
+  };
+
+  const enterGuestMode = () => {
+    const guestId = `guest_${Date.now()}`;
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(USER_ID_STORAGE_KEY, guestId);
+    }
+    setAuthError(null);
+    setUserId(guestId);
   };
 
   const bgColor = isDark ? "#020617" : "#f9fafb";
@@ -608,6 +660,18 @@ const App: React.FC = () => {
         </motion.div>
         {error && <div style={{ marginTop: 6, fontSize: 12, color: "#f97316", textAlign: "center" }}>{error}</div>}
       </div>
+
+      {userId == null && (
+        <div role="dialog" aria-modal="true" aria-label={t("enterPrivate")} style={{ position: "fixed", inset: 0, zIndex: 99, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(2,6,23,0.52)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
+          <motion.div initial={{ scale: 0.96, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 360, borderRadius: 24, padding: 24, background: cardBg, border: `1px solid ${subtleBorder}`, boxShadow: "0 28px 64px rgba(0,0,0,0.35)" }}>
+            <div style={{ marginBottom: 14, fontSize: 18, fontWeight: 700 }}>{t("appName")}</div>
+            <input type="password" inputMode="numeric" value={authInput} onChange={(e) => { setAuthInput(e.target.value); if (authError) setAuthError(null); }} onKeyDown={(e) => { if (e.key === "Enter") enterPrivateSpace(); }} placeholder={t("passcodePlaceholder")} style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.65)" : "rgba(248,250,252,0.92)", color: isDark ? "#e5e7eb" : "#020617", marginBottom: 12 }} />
+            <button type="button" onClick={enterPrivateSpace} style={{ width: "100%", borderRadius: 12, border: "none", padding: "11px 14px", fontSize: 14, fontWeight: 700, color: "#f8fafc", background: "linear-gradient(135deg, #3b82f6, #22c55e)", cursor: "pointer", marginBottom: 10 }}>{t("enterPrivate")}</button>
+            <button type="button" onClick={enterGuestMode} style={{ width: "100%", borderRadius: 12, border: `1px solid ${subtleBorder}`, padding: "10px 14px", fontSize: 14, fontWeight: 600, background: "transparent", color: "inherit", cursor: "pointer" }}>{t("guestMode")}</button>
+            {authError && <div style={{ marginTop: 10, fontSize: 12, color: "#f97316", textAlign: "center" }}>{authError}</div>}
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 };

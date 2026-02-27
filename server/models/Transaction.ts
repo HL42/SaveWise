@@ -6,6 +6,7 @@ export type TransactionType = "expense" | "income" | "transfer";
 
 // 交易记录接口
 export interface ITransaction extends Document {
+  userId: string;
   amount: number;
   type: TransactionType;
   category: string;
@@ -17,6 +18,11 @@ export interface ITransaction extends Document {
 
 const TransactionSchema: Schema<ITransaction> = new Schema<ITransaction>(
   {
+    userId: {
+      type: String,
+      required: true,
+      index: true,
+    },
     amount: {
       type: Number,
       required: true,
@@ -53,4 +59,3 @@ const TransactionSchema: Schema<ITransaction> = new Schema<ITransaction>(
 export const Transaction: Model<ITransaction> =
   mongoose.models.Transaction ||
   mongoose.model<ITransaction>("Transaction", TransactionSchema);
-

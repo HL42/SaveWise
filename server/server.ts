@@ -204,11 +204,56 @@ const asyncHandler =
     }
   };
 
+function getUserId(req: Request): string | null {
+  const raw = req.headers["x-user-id"];
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  return v.length > 0 ? v : null;
+}
+
+async function ensureDefaultAccounts(userId: string) {
+  const created: unknown[] = [];
+  const existing: unknown[] = [];
+  const initialBalance = 0;
+
+  for (const { name, type, currency } of DEFAULT_ACCOUNTS) {
+    const found = await Account.findOne({ userId, name });
+    if (found) {
+      if (found.type !== type) found.type = type;
+      if (found.currency !== currency) found.currency = currency;
+      if (!found.displayCurrency) found.displayCurrency = currency;
+      await found.save();
+      existing.push(found);
+    } else {
+      const acc = await Account.create({
+        userId,
+        name,
+        type,
+        currency,
+        displayCurrency: currency,
+        balance: initialBalance,
+      });
+      created.push(acc);
+    }
+  }
+
+  return {
+    initialBalance,
+    created,
+    existing,
+  };
+}
+
 // POST /api/record
 // 接收用户的一段话 -> 调用 Gemini -> 解析为 JSON -> 存入 Transaction 并更新 Account 余额
 app.post(
   "/api/record",
   asyncHandler(async (req: Request, res: Response) => {
+    const userId = getUserId(req);
+    if (!userId) {
+      res.status(401).json({ error: "缺少 x-user-id" });
+      return;
+    }
     const { text } = req.body as { text?: string };
 
     if (!text) {
@@ -217,8 +262,14 @@ app.post(
     }
 
     await connectDB();
-    const accountDocs = await Account.find({}, { name: 1, type: 1 }).lean();
-    const accountNames = accountDocs.map((a) => a.name);
+    const accountDocs = await Account.find({ userId }, { name: 1, type: 1 }).lean();
+    if (accountDocs.length === 0) {
+      await ensureDefaultAccounts(userId);
+    }
+    const refreshedDocs = accountDocs.length === 0
+      ? await Account.find({ userId }, { name: 1, type: 1 }).lean()
+      : accountDocs;
+    const accountNames = refreshedDocs.map((a) => a.name);
 
     let parsed: ParsedTransactionPayload;
 
@@ -229,7 +280,7 @@ app.post(
       });
 
       // 2. 注入当前可用账户（含用户新增信用卡），提升解析准确率
-      const dynamicAccountsPrompt = `当前可用账户列表（name / type）：\n${accountDocs
+      const dynamicAccountsPrompt = `当前可用账户列表（name / type）：\n${refreshedDocs
         .map((acc) => `- ${acc.name} (${acc.type})`)
         .join("\n")}`;
       const finalPrompt = `${SYSTEM_PROMPT}\n\n${dynamicAccountsPrompt}\n\n当前用户输入: "${text}"\n请只输出 JSON。`;
@@ -274,7 +325,7 @@ app.post(
       return;
     }
 
-    const sourceAccount = await Account.findOne({ name: normalizedSource });
+    const sourceAccount = await Account.findOne({ userId, name: normalizedSource });
     if (!sourceAccount) {
       res.status(400).json({ error: `未找到账户: ${normalizedSource}` });
       return;
@@ -291,7 +342,7 @@ app.post(
         res.status(400).json({ error: `无法识别目标账户: ${parsed.target_account}` });
         return;
       }
-      targetAccount = await Account.findOne({ name: normalizedTarget });
+      targetAccount = await Account.findOne({ userId, name: normalizedTarget });
       if (!targetAccount) {
         res.status(400).json({ error: `未找到目标账户: ${normalizedTarget}` });
         return;
@@ -335,6 +386,7 @@ app.post(
       const transaction = await Transaction.create(
         [{
           amount: parsed.amount,
+          userId,
           type: parsed.type,
           category: parsed.category,
           account: sourceAccount._id,
@@ -368,32 +420,12 @@ const DEFAULT_ACCOUNTS: { name: string; type: AccountType; currency: AccountCurr
 app.get("/api/init-accounts", async (_req: Request, res: Response) => {
   try {
     await connectDB();
-
-    const initialBalance = 1000;
-    const created: any[] = [];
-    const existing: any[] = [];
-
-    for (const { name, type, currency } of DEFAULT_ACCOUNTS) {
-      const found = await Account.findOne({ name });
-      if (found) {
-        if (found.type !== type) {
-          found.type = type;
-        }
-        if (found.currency !== currency) found.currency = currency;
-        if (!found.displayCurrency) found.displayCurrency = currency;
-        await found.save();
-        existing.push(found);
-      } else {
-        const acc = await Account.create({
-          name,
-          type,
-          currency,
-          displayCurrency: currency,
-          balance: initialBalance,
-        });
-        created.push(acc);
-      }
+    const userId = getUserId(_req);
+    if (!userId) {
+      res.status(401).json({ error: "缺少 x-user-id" });
+      return;
     }
+    const { initialBalance, created, existing } = await ensureDefaultAccounts(userId);
 
     res.json({
       message: "初始化账户完成",
@@ -412,7 +444,16 @@ app.get("/api/init-accounts", async (_req: Request, res: Response) => {
 // 返回所有账户 + CAD/CNY 汇率（用于前端展示与换算）
 app.get("/api/accounts", asyncHandler(async (_req: Request, res: Response) => {
   await connectDB();
-  const accounts = await Account.find().sort({ name: 1 }).lean();
+  const userId = getUserId(_req);
+  if (!userId) {
+    res.status(401).json({ error: "缺少 x-user-id" });
+    return;
+  }
+  let accounts = await Account.find({ userId }).sort({ name: 1 }).lean();
+  if (accounts.length === 0) {
+    await ensureDefaultAccounts(userId);
+    accounts = await Account.find({ userId }).sort({ name: 1 }).lean();
+  }
   const fx = await getCadCnyRate();
   const normalized = accounts.map((acc) =>
     serializeAccount({
@@ -433,6 +474,11 @@ app.post(
   "/api/accounts",
   asyncHandler(async (req: Request, res: Response) => {
     await connectDB();
+    const userId = getUserId(req);
+    if (!userId) {
+      res.status(401).json({ error: "缺少 x-user-id" });
+      return;
+    }
     const body = req.body as {
       name?: string;
       balance?: number;
@@ -446,7 +492,7 @@ app.post(
       res.status(400).json({ error: "请提供信用卡名称" });
       return;
     }
-    const exists = await Account.findOne({ name });
+    const exists = await Account.findOne({ userId, name });
     if (exists) {
       res.status(409).json({ error: "账户名称已存在" });
       return;
@@ -464,6 +510,7 @@ app.post(
         : currency;
 
     const account = await Account.create({
+      userId,
       name,
       type: "liability",
       // 重要：balance 永远按用户输入的账户原生货币原样存储，禁止在存储前换算
@@ -479,8 +526,13 @@ app.post(
 
 app.post(
   "/api/analyze",
-  asyncHandler(async (_req: Request, res: Response) => {
+  asyncHandler(async (req: Request, res: Response) => {
     await connectDB();
+    const userId = getUserId(req);
+    if (!userId) {
+      res.status(401).json({ error: "缺少 x-user-id" });
+      return;
+    }
 
     const end = new Date();
     const start = new Date();
@@ -488,6 +540,7 @@ app.post(
     start.setDate(start.getDate() - 6);
 
     const expenses = await Transaction.find({
+      userId,
       type: "expense",
       date: { $gte: start, $lte: end },
     })
@@ -539,8 +592,13 @@ app.put(
   "/api/accounts/:name",
   asyncHandler(async (req: Request, res: Response) => {
     await connectDB();
+    const userId = getUserId(req);
+    if (!userId) {
+      res.status(401).json({ error: "缺少 x-user-id" });
+      return;
+    }
     const nameRaw = decodeURIComponent(req.params.name as string);
-    const accountNames = (await Account.find({}, { name: 1 }).lean()).map((a) => a.name);
+    const accountNames = (await Account.find({ userId }, { name: 1 }).lean()).map((a) => a.name);
     const normalized = resolveAccountNameFromList(nameRaw, accountNames);
     if (!normalized) {
       res.status(400).json({ error: `无法识别账户: ${nameRaw}` });
@@ -558,7 +616,7 @@ app.put(
     // 重要：balance 永远按用户输入的账户原生货币原样存储，禁止在存储前换算
     const rawBalance = body.balance;
     const update: Record<string, number | undefined> = { balance: rawBalance };
-    const existing = await Account.findOne({ name: normalized });
+    const existing = await Account.findOne({ userId, name: normalized });
     if (!existing) {
       res.status(404).json({ error: `未找到账户: ${normalized}` });
       return;
@@ -584,7 +642,7 @@ app.put(
       (update as { displayCurrency?: AccountCurrency }).displayCurrency = body.displayCurrency;
     }
     const account = await Account.findOneAndUpdate(
-      { name: normalized },
+      { userId, name: normalized },
       update,
       { new: true }
     );
@@ -601,8 +659,13 @@ app.put(
 // 本月收支统计：仅统计 income / expense，转账不计入收入或支出
 app.get(
   "/api/stats/monthly",
-  asyncHandler(async (_req: Request, res: Response) => {
+  asyncHandler(async (req: Request, res: Response) => {
     await connectDB();
+    const userId = getUserId(req);
+    if (!userId) {
+      res.status(401).json({ error: "缺少 x-user-id" });
+      return;
+    }
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
     const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -612,6 +675,7 @@ app.get(
         {
           $match: {
             date: { $gte: start, $lt: end },
+            userId,
             type: "income",
           },
         },
@@ -621,6 +685,7 @@ app.get(
         {
           $match: {
             date: { $gte: start, $lt: end },
+            userId,
             type: "expense",
           },
         },

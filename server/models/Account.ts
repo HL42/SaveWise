@@ -13,6 +13,7 @@ export type AccountCurrency = "CAD" | "CNY";
 
 // TypeScript 接口，用来约束 Account 文档的类型
 export interface IAccount extends Document {
+  userId: string;
   name: string;
   type: AccountType;
   currency: AccountCurrency;
@@ -24,10 +25,14 @@ export interface IAccount extends Document {
 
 const AccountSchema: Schema<IAccount> = new Schema<IAccount>(
   {
+    userId: {
+      type: String,
+      required: true,
+      index: true,
+    },
     name: {
       type: String,
       required: true,
-      unique: true,
     },
     type: {
       type: String,
@@ -62,6 +67,8 @@ const AccountSchema: Schema<IAccount> = new Schema<IAccount>(
     timestamps: true,
   }
 );
+
+AccountSchema.index({ userId: 1, name: 1 }, { unique: true });
 
 export const Account: Model<IAccount> =
   mongoose.models.Account || mongoose.model<IAccount>("Account", AccountSchema);
