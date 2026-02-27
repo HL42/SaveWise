@@ -4,7 +4,7 @@ import { Wallet, Smartphone, CreditCard, Banknote, Send, AlertCircle, Sparkles, 
 import { LANGUAGE_STORAGE_KEY, locales } from "./locales";
 import type { Language } from "./locales";
 
-const API_BASE = "http://localhost:5005";
+const API_BASE = "https://savewise-backend.onrender.com";
 const SAVING_GOAL_STORAGE_KEY = "savewise_saving_goal";
 const DEFAULT_SAVING_GOAL = 10000;
 
