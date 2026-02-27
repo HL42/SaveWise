@@ -2,7 +2,7 @@ import "dotenv/config"; // 加载环境变量，方便在整个项目中使用
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { connectDB } from "./db";
-import { Account, AccountName, AccountType } from "./models/Account";
+import { Account, AccountCurrency, AccountType, CORE_ACCOUNT_NAMES } from "./models/Account";
 import { Transaction, TransactionType } from "./models/Transaction";
 import "dotenv/config";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -39,47 +39,49 @@ if (!geminiApiKey) {
 
 const genAI = new GoogleGenerativeAI(geminiApiKey);
 
-// 财务记账助手 System Prompt：从自然语言提取交易 JSON
 const SYSTEM_PROMPT = `# Role
-你是一个专业的财务记账助手，专门负责从模糊的自然语言中提取财务交易数据。你的任务是将用户的描述转换为精确的 JSON 格式。
+你是一个极度精确的财务解析助手。你的任务是将用户的记账话术转换为标准的 JSON。
 
 # Constraints
-1. 必须仅输出 JSON 格式，不要包含任何多余的文字说明。
-2. 当前时间参考：2026-02-25 (Wednesday)。
-3. 如果用户未指明日期，默认使用当前日期。
-4. 如果用户提到“昨天”、“前天”，请根据参考日期计算出准确日期。
-5. 金额必须为数字（Number），不能带有千分符。
+1. 必须仅输出 JSON，严禁任何解释性文字。
+2. 当前参考时间：2026-02-26 (Thursday)。
+3. “还信用卡/还款给xx卡”等语义，必须识别为 type: "transfer"，且 target_account 必须是 "credit_card"。
+4. 如果输入中提到账户名（例如 BMO），优先匹配“当前可用账户列表”里的同名账户。
 
-# Account Mapping (重要)
-仅支持以下四个账户名：
-- \`wechat\` (微信)
-- \`cash\` (现金)
-- \`credit_card\` (信用卡)
-- \`debit_card\` (借记卡)
-- 如果未提及，默认为 \`debit_card\`。
+# Account Mapping
+- 微信: "wechat", 现金: "cash", 信用卡: "credit_card", 借记卡: "debit_card"。
 
 # Output Schema
 {
   "amount": number,
   "type": "expense" | "income" | "transfer",
-  "category": string,
-  "account": string,
+  "category": "还款" | string,
+  "account": string, 
   "target_account": string | null,
   "date": "YYYY-MM-DD",
   "note": string
 }
 
-# Example Inputs & Outputs
-Input: "昨天吃火锅微信付了200"
-Output: {"amount": 200, "type": "expense", "category": "餐饮", "account": "wechat", "target_account": null, "date": "2026-02-24", "note": "火锅"}
+# Examples
+Input: "用借记卡还了600信用卡"
+Output: {"amount": 600, "type": "transfer", "category": "还款", "account": "debit_card", "target_account": "credit_card", "date": "2026-02-26", "note": "还信用卡"}
 
-Input: "往借记卡存了5000"
-Output: {"amount": 5000, "type": "income", "category": "工资/存入", "account": "debit_card", "target_account": null, "date": "2026-02-25", "note": "存入"}
+Input: "信用卡刷了100买衣服"
+Output: {"amount": 100, "type": "expense", "category": "购物", "account": "credit_card", "target_account": null, "date": "2026-02-26", "note": "衣服"}
 
-Input: "从借记卡转了1000去还信用卡"
-Output: {"amount": 1000, "type": "transfer", "category": "还款", "account": "debit_card", "target_account": "credit_card", "date": "2026-02-25", "note": "还信用卡"}
+Respond with VALID JSON ONLY.`;
 
-Respond with VALID JSON ONLY. Do not wrap in markdown. Do not add comments.`;
+const WEEKLY_ROAST_SYSTEM_PROMPT = `# Role
+你是一个极度毒舌、言辞犀利但心怀善意的财务教练。你的任务是分析用户过去一周的消费记录，给出一份让人“扎心”但能反思的财务总结。
+
+# Style
+1. 语气：刻薄、幽默、充满讽刺，像一个损友。
+2. 语言：中文。
+3. 关键点：找出消费中最不合理的支出，狠狠地吐槽。
+
+# Constraints
+1. 篇幅：控制在 150 字以内。
+2. 结构：先给本周表现打分（0-100），然后分两段进行毒舌评论，最后给出一个极其抠门的建议。`;
 
 type ParsedTransactionPayload = {
   amount: number;
@@ -91,38 +93,91 @@ type ParsedTransactionPayload = {
   note: string;
 };
 
-// 把 AI 输出的账户名统一转换为枚举值，解决大小写 / 别名问题
-function normalizeAccountName(raw: string | null | undefined): AccountName | null {
-  if (!raw) return null;
-  const v = raw.trim().toLowerCase();
+type FxRatePayload = {
+  cadToCny: number;
+  fetchedAt: string;
+};
 
-  switch (v) {
-    case "wechat":
-    case "weixin":
-    case "wx":
-    case "微信":
-      return AccountName.WeChat;
-    case "cash":
-    case "xianjin":
-    case "现金":
-      return AccountName.Cash;
-    case "creditcard":
-    case "credit_card":
-    case "credit card":
-    case "信用卡":
-      return AccountName.CreditCard;
-    case "debitcard":
-    case "debit_card":
-    case "debit card":
-    case "debit":
-    case "借记卡":
-      return AccountName.DebitCard;
-    default:
-      // 如果 AI 已经输出正确的枚举值，就直接匹配
-      if ((Object.values(AccountName) as string[]).includes(raw)) {
-        return raw as AccountName;
-      }
-      return null;
+const NAME_ALIASES: Record<string, string> = {
+  wechat: CORE_ACCOUNT_NAMES.WeChat,
+  weixin: CORE_ACCOUNT_NAMES.WeChat,
+  wx: CORE_ACCOUNT_NAMES.WeChat,
+  "微信": CORE_ACCOUNT_NAMES.WeChat,
+  cash: CORE_ACCOUNT_NAMES.Cash,
+  xianjin: CORE_ACCOUNT_NAMES.Cash,
+  "现金": CORE_ACCOUNT_NAMES.Cash,
+  creditcard: CORE_ACCOUNT_NAMES.CreditCard,
+  "credit_card": CORE_ACCOUNT_NAMES.CreditCard,
+  "credit card": CORE_ACCOUNT_NAMES.CreditCard,
+  "信用卡": CORE_ACCOUNT_NAMES.CreditCard,
+  debitcard: CORE_ACCOUNT_NAMES.DebitCard,
+  "debit_card": CORE_ACCOUNT_NAMES.DebitCard,
+  "debit card": CORE_ACCOUNT_NAMES.DebitCard,
+  debit: CORE_ACCOUNT_NAMES.DebitCard,
+  "借记卡": CORE_ACCOUNT_NAMES.DebitCard,
+};
+
+const normalizeToken = (v: string): string =>
+  v.trim().toLowerCase().replace(/[_\-\s]/g, "");
+
+function resolveAccountNameFromList(raw: string | null | undefined, accountNames: string[]): string | null {
+  if (!raw) return null;
+  const cleaned = raw.trim();
+  if (!cleaned) return null;
+
+  const alias = NAME_ALIASES[cleaned.toLowerCase()];
+  if (alias) return alias;
+
+  const normalized = normalizeToken(cleaned);
+  const matched = accountNames.find((n) => normalizeToken(n) === normalized);
+  if (matched) return matched;
+
+  const fuzzy = accountNames.find((n) => {
+    const nn = normalizeToken(n);
+    return normalized.includes(nn) || nn.includes(normalized);
+  });
+  return fuzzy ?? null;
+}
+
+function serializeAccount(acc: {
+  _id: unknown;
+  name: string;
+  type: AccountType;
+  balance: number;
+  dueDate?: number;
+  currency: AccountCurrency;
+  displayCurrency?: AccountCurrency;
+}) {
+  return {
+    _id: acc._id,
+    name: acc.name,
+    type: acc.type,
+    balance: acc.balance,
+    dueDate: acc.dueDate,
+    currency: acc.currency,
+    displayCurrency: acc.displayCurrency ?? acc.currency,
+  };
+}
+
+async function getCadCnyRate(): Promise<FxRatePayload> {
+  try {
+    const r = await fetch("https://api.frankfurter.app/latest?from=CAD&to=CNY");
+    if (!r.ok) throw new Error(`fx status ${r.status}`);
+    const data = (await r.json()) as { rates?: { CNY?: number }; date?: string };
+    const rate = data.rates?.CNY;
+    if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+      throw new Error("invalid fx response");
+    }
+    return {
+      cadToCny: rate,
+      fetchedAt: data.date ?? new Date().toISOString(),
+    };
+  } catch (err) {
+    console.error("FX fetch failed, fallback to 5.0:", err);
+    return {
+      cadToCny: 5.0,
+      fetchedAt: new Date().toISOString(),
+    };
   }
 }
 
@@ -152,6 +207,8 @@ app.post(
     }
 
     await connectDB();
+    const accountDocs = await Account.find({}, { name: 1, type: 1 }).lean();
+    const accountNames = accountDocs.map((a) => a.name);
 
     let parsed: ParsedTransactionPayload;
 
@@ -161,8 +218,11 @@ app.post(
         model: "gemini-3-flash-preview",
       });
 
-      // 2. 将 System Prompt 和用户输入组合，确保 AI 乖乖听话
-      const finalPrompt = `${SYSTEM_PROMPT}\n\n当前用户输入: "${text}"\n请只输出 JSON。`;
+      // 2. 注入当前可用账户（含用户新增信用卡），提升解析准确率
+      const dynamicAccountsPrompt = `当前可用账户列表（name / type）：\n${accountDocs
+        .map((acc) => `- ${acc.name} (${acc.type})`)
+        .join("\n")}`;
+      const finalPrompt = `${SYSTEM_PROMPT}\n\n${dynamicAccountsPrompt}\n\n当前用户输入: "${text}"\n请只输出 JSON。`;
 
       const result = await model.generateContent(finalPrompt);
       const response = await result.response;
@@ -181,13 +241,24 @@ app.post(
         category: "测试",
         account: "wechat",
         target_account: null,
-        date: "2026-02-25",
+        date: "2026-02-26",
         note: "AI暂时休息，这是模拟入账",
       };
     }
 
+    // 兜底规则：凡是“还信用卡”语义，强制修正为 transfer 到 credit_card
+    const repayCreditCardPattern = /还.*信用卡|信用卡.*还款|偿还.*信用卡|还款给.*卡/;
+    if (repayCreditCardPattern.test(text)) {
+      parsed.type = "transfer";
+      parsed.target_account = "credit_card";
+      // 若模型把主账户识别为信用卡，改回默认出款账户
+      if (resolveAccountNameFromList(parsed.account, accountNames) === CORE_ACCOUNT_NAMES.CreditCard) {
+        parsed.account = "debit_card";
+      }
+    }
+
     // 归一化主账户与（转账时的）目标账户
-    const normalizedSource = normalizeAccountName(parsed.account);
+    const normalizedSource = resolveAccountNameFromList(parsed.account, accountNames);
     if (!normalizedSource) {
       res.status(400).json({ error: `无法识别账户: ${parsed.account}` });
       return;
@@ -200,8 +271,12 @@ app.post(
     }
 
     let targetAccount: (typeof sourceAccount) | null = null;
+    if (parsed.type === "transfer" && !parsed.target_account) {
+      res.status(400).json({ error: "转账必须包含目标账户 target_account" });
+      return;
+    }
     if (parsed.type === "transfer" && parsed.target_account) {
-      const normalizedTarget = normalizeAccountName(parsed.target_account);
+      const normalizedTarget = resolveAccountNameFromList(parsed.target_account, accountNames);
       if (!normalizedTarget) {
         res.status(400).json({ error: `无法识别目标账户: ${parsed.target_account}` });
         return;
@@ -219,7 +294,10 @@ app.post(
     try {
       const amount = parsed.amount;
 
-      // 对账逻辑：支出 Asset 减 / Liability 加；收入 Asset 加 / Liability 减；转账 来源减、目标按类型加减
+      // 对账逻辑：
+      // expense: asset 减 / liability 加（欠款增加）
+      // income: asset 加 / liability 减（欠款减少）
+      // transfer: 来源永远减；目标是 credit_card 则减（还款），否则按资产加
       if (parsed.type === "expense") {
         if (sourceAccount.type === "asset") {
           sourceAccount.balance -= amount;
@@ -233,11 +311,11 @@ app.post(
           sourceAccount.balance -= amount; // 负债：欠款变少
         }
       } else if (parsed.type === "transfer" && targetAccount) {
-        sourceAccount.balance -= amount; // 来源（资产）减少
-        if (targetAccount.type === "asset") {
-          targetAccount.balance += amount;
+        sourceAccount.balance -= amount; // 来源账户永远减少
+        if (targetAccount.type === "liability") {
+          targetAccount.balance -= amount; // 关键：还信用卡时负债减少
         } else {
-          targetAccount.balance -= amount; // 还债：负债减少
+          targetAccount.balance += amount; // 目标资产增加
         }
       }
 
@@ -268,12 +346,12 @@ app.post(
   })
 );
 
-// 四个基础账户及其类型：asset = 资产，liability = 负债（信用卡）
-const DEFAULT_ACCOUNTS: { name: AccountName; type: AccountType }[] = [
-  { name: AccountName.WeChat, type: "asset" },
-  { name: AccountName.Cash, type: "asset" },
-  { name: AccountName.DebitCard, type: "asset" },
-  { name: AccountName.CreditCard, type: "liability" },
+// 四个基础账户：保留默认账户，但允许用户后续新增信用卡账户
+const DEFAULT_ACCOUNTS: { name: string; type: AccountType; currency: AccountCurrency }[] = [
+  { name: CORE_ACCOUNT_NAMES.WeChat, type: "asset", currency: "CNY" },
+  { name: CORE_ACCOUNT_NAMES.Cash, type: "asset", currency: "CAD" },
+  { name: CORE_ACCOUNT_NAMES.DebitCard, type: "asset", currency: "CAD" },
+  { name: CORE_ACCOUNT_NAMES.CreditCard, type: "liability", currency: "CAD" },
 ];
 
 // 临时初始化账户：若不存在则创建，并写入 type
@@ -285,18 +363,22 @@ app.get("/api/init-accounts", async (_req: Request, res: Response) => {
     const created: any[] = [];
     const existing: any[] = [];
 
-    for (const { name, type } of DEFAULT_ACCOUNTS) {
+    for (const { name, type, currency } of DEFAULT_ACCOUNTS) {
       const found = await Account.findOne({ name });
       if (found) {
         if (found.type !== type) {
           found.type = type;
-          await found.save();
         }
+        if (found.currency !== currency) found.currency = currency;
+        if (!found.displayCurrency) found.displayCurrency = currency;
+        await found.save();
         existing.push(found);
       } else {
         const acc = await Account.create({
           name,
           type,
+          currency,
+          displayCurrency: currency,
           balance: initialBalance,
         });
         created.push(acc);
@@ -317,20 +399,139 @@ app.get("/api/init-accounts", async (_req: Request, res: Response) => {
   }
 });
 
-// 返回所有账户（用于前端展示与初始对账）
+// 返回所有账户 + CAD/CNY 汇率（用于前端展示与换算）
 app.get("/api/accounts", asyncHandler(async (_req: Request, res: Response) => {
   await connectDB();
   const accounts = await Account.find().sort({ name: 1 }).lean();
-  res.json(accounts);
+  const fx = await getCadCnyRate();
+  const normalized = accounts.map((acc) =>
+    serializeAccount({
+      _id: acc._id,
+      name: acc.name,
+      type: acc.type ?? (acc.name === CORE_ACCOUNT_NAMES.CreditCard ? "liability" : "asset"),
+      balance: acc.balance,
+      dueDate: acc.dueDate,
+      currency: acc.currency ?? "CAD",
+      displayCurrency: acc.displayCurrency ?? (acc.currency ?? "CAD"),
+    })
+  );
+  res.json({ accounts: normalized, fx });
 }));
+
+// 新增信用卡账户（liability）
+app.post(
+  "/api/accounts",
+  asyncHandler(async (req: Request, res: Response) => {
+    await connectDB();
+    const body = req.body as {
+      name?: string;
+      balance?: number;
+      dueDate?: number;
+      currency?: AccountCurrency;
+      displayCurrency?: AccountCurrency;
+      type?: AccountType;
+    };
+    const name = body.name?.trim();
+    if (!name) {
+      res.status(400).json({ error: "请提供信用卡名称" });
+      return;
+    }
+    const exists = await Account.findOne({ name });
+    if (exists) {
+      res.status(409).json({ error: "账户名称已存在" });
+      return;
+    }
+
+    const dueDate =
+      typeof body.dueDate === "number" && body.dueDate >= 1 && body.dueDate <= 31
+        ? body.dueDate
+        : undefined;
+
+    const currency: AccountCurrency = body.currency === "CNY" ? "CNY" : "CAD";
+    const displayCurrency: AccountCurrency =
+      body.displayCurrency === "CAD" || body.displayCurrency === "CNY"
+        ? body.displayCurrency
+        : currency;
+
+    const account = await Account.create({
+      name,
+      type: "liability",
+      // 重要：balance 永远按用户输入的账户原生货币原样存储，禁止在存储前换算
+      balance: typeof body.balance === "number" ? body.balance : 0,
+      dueDate,
+      currency,
+      displayCurrency,
+    });
+
+    res.status(201).json(serializeAccount(account));
+  })
+);
+
+app.post(
+  "/api/analyze",
+  asyncHandler(async (_req: Request, res: Response) => {
+    await connectDB();
+
+    const end = new Date();
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 6);
+
+    const expenses = await Transaction.find({
+      type: "expense",
+      date: { $gte: start, $lte: end },
+    })
+      .populate("account", "name type")
+      .sort({ date: -1 })
+      .lean();
+
+    const weeklyTotal = expenses.reduce((sum, tx) => sum + tx.amount, 0);
+    const payload = expenses.map((tx) => ({
+      amount: tx.amount,
+      category: tx.category,
+      note: tx.note ?? "",
+      date: tx.date,
+      account: (tx.account as { name?: string } | undefined)?.name ?? "未知账户",
+    }));
+
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const prompt = `${WEEKLY_ROAST_SYSTEM_PROMPT}\n\n以下是用户最近7天支出数据(JSON)：\n${JSON.stringify(
+      {
+        weeklyTotal,
+        expenseCount: payload.length,
+        expenses: payload,
+      },
+      null,
+      2
+    )}`;
+
+    try {
+      const result = await model.generateContent(prompt);
+      const text = result.response.text().trim();
+      res.json({
+        period: {
+          start: start.toISOString(),
+          end: end.toISOString(),
+        },
+        weeklyTotal,
+        expenseCount: payload.length,
+        roast: text,
+      });
+    } catch (error) {
+      console.error("Gemini analyze 调用失败:", error);
+      res.status(502).json({ error: "AI 分析暂时不可用，请稍后再试" });
+    }
+  })
+);
 
 // 直接更新某个账户的余额、还款日等（严谨对账 / 账户设置）
 app.put(
   "/api/accounts/:name",
   asyncHandler(async (req: Request, res: Response) => {
     await connectDB();
-    const nameRaw = req.params.name as string;
-    const normalized = normalizeAccountName(nameRaw);
+    const nameRaw = decodeURIComponent(req.params.name as string);
+    const accountNames = (await Account.find({}, { name: 1 }).lean()).map((a) => a.name);
+    const normalized = resolveAccountNameFromList(nameRaw, accountNames);
     if (!normalized) {
       res.status(400).json({ error: `无法识别账户: ${nameRaw}` });
       return;
@@ -338,18 +539,39 @@ app.put(
     const body = req.body as {
       balance?: number;
       dueDate?: number;
-      billingDate?: number;
+      displayCurrency?: AccountCurrency;
     };
     if (typeof body.balance !== "number") {
       res.status(400).json({ error: "请提供数字类型的 balance" });
       return;
     }
-    const update: Record<string, number> = { balance: body.balance };
-    if (typeof body.dueDate === "number" && body.dueDate >= 1 && body.dueDate <= 31) {
-      update.dueDate = body.dueDate;
+    // 重要：balance 永远按用户输入的账户原生货币原样存储，禁止在存储前换算
+    const rawBalance = body.balance;
+    const update: Record<string, number | undefined> = { balance: rawBalance };
+    const existing = await Account.findOne({ name: normalized });
+    if (!existing) {
+      res.status(404).json({ error: `未找到账户: ${normalized}` });
+      return;
     }
-    if (typeof body.billingDate === "number" && body.billingDate >= 1 && body.billingDate <= 31) {
-      update.billingDate = body.billingDate;
+    const isCreditCard = normalized === CORE_ACCOUNT_NAMES.CreditCard;
+    if (isCreditCard && existing.type !== "liability") {
+      existing.type = "liability";
+      await existing.save();
+    }
+
+    if (existing.type === "liability" || isCreditCard) {
+      if (
+        typeof body.dueDate === "number" &&
+        body.dueDate >= 1 &&
+        body.dueDate <= 31
+      ) {
+        update.dueDate = body.dueDate;
+      }
+    } else {
+      update.dueDate = undefined;
+    }
+    if (body.displayCurrency === "CAD" || body.displayCurrency === "CNY") {
+      (update as { displayCurrency?: AccountCurrency }).displayCurrency = body.displayCurrency;
     }
     const account = await Account.findOneAndUpdate(
       { name: normalized },
@@ -360,7 +582,9 @@ app.put(
       res.status(404).json({ error: `未找到账户: ${normalized}` });
       return;
     }
-    res.json(account);
+    res.json({
+      ...serializeAccount(account),
+    });
   })
 );
 
@@ -431,4 +655,3 @@ const startServer = async () => {
 };
 
 startServer();
-
