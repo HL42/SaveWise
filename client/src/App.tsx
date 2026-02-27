@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Wallet, Smartphone, CreditCard, Banknote, Send, AlertCircle, Sparkles, Plus } from "lucide-react";
+import { LANGUAGE_STORAGE_KEY, locales } from "./locales";
+import type { Language } from "./locales";
 
 const API_BASE = "http://localhost:5005";
 const SAVING_GOAL_STORAGE_KEY = "savewise_saving_goal";
@@ -52,6 +54,7 @@ const convertAmount = (amount: number, from: Currency, to: Currency, cadToCny: n
 
 const App: React.FC = () => {
   const [isDark, setIsDark] = useState(false);
+  const [language, setLanguage] = useState<Language>("zh");
   const [backendHealthy, setBackendHealthy] = useState<boolean | null>(null);
   const [accountsFromApi, setAccountsFromApi] = useState<BackendAccount[]>([]);
   const [highlightKeys, setHighlightKeys] = useState<string[]>([]);
@@ -84,6 +87,7 @@ const App: React.FC = () => {
   const [isRoastOpen, setIsRoastOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [roastData, setRoastData] = useState<AnalyzeResponse | null>(null);
+  const t = useCallback((key: keyof typeof locales.zh) => locales[language][key], [language]);
 
   const fetchAccounts = useCallback(async (): Promise<BackendAccount[] | null> => {
     try {
@@ -128,6 +132,12 @@ const App: React.FC = () => {
       setSavingGoal(num);
       setGoalInput(String(num));
     }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const cached = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+    if (cached === "zh" || cached === "en") setLanguage(cached);
   }, []);
 
   const fetchMonthlyStats = useCallback(async () => {
@@ -209,7 +219,7 @@ const App: React.FC = () => {
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "记账失败");
+        throw new Error(body.error || t("errRecordFailed"));
       }
 
       const next = await fetchAccounts();
@@ -227,7 +237,7 @@ const App: React.FC = () => {
       }
       setInput("");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "发送失败，请稍后再试");
+      setError(e instanceof Error ? e.message : t("errSendFailed"));
     } finally {
       setIsSending(false);
     }
@@ -287,14 +297,14 @@ const App: React.FC = () => {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "更新失败");
+        throw new Error(body.error || t("errUpdateFailed"));
       }
       const updated: BackendAccount = await res.json();
       setAccountsFromApi((prev) => prev.map((acc) => (acc.name === updated.name ? { ...acc, ...updated } : acc)));
       await fetchAccounts();
       closeReconcile();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "更新失败");
+      setError(e instanceof Error ? e.message : t("errUpdateFailed"));
     } finally {
       setIsReconciling(false);
     }
@@ -305,11 +315,11 @@ const App: React.FC = () => {
     const bal = Number(newCardBalance);
     const due = newCardDueDate.trim() === "" ? undefined : Number(newCardDueDate);
     if (!name) {
-      setError("请填写信用卡名称");
+      setError(t("errCreateCardName"));
       return;
     }
     if (Number.isNaN(bal)) {
-      setError("请填写有效的初始欠款");
+      setError(t("errCreateCardBalance"));
       return;
     }
 
@@ -330,7 +340,7 @@ const App: React.FC = () => {
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "创建信用卡失败");
+        throw new Error(body.error || t("errCreateCardFailed"));
       }
       await fetchAccounts();
       setIsAddingCard(false);
@@ -339,7 +349,7 @@ const App: React.FC = () => {
       setNewCardDueDate("");
       setNewCardCurrency("CAD");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "创建信用卡失败");
+      setError(e instanceof Error ? e.message : t("errCreateCardFailed"));
     } finally {
       setIsCreatingCard(false);
     }
@@ -353,7 +363,7 @@ const App: React.FC = () => {
   const confirmGoal = () => {
     const parsed = Number(goalInput);
     if (Number.isNaN(parsed) || parsed <= 0) {
-      setError("目标金额必须大于 0");
+      setError(t("errGoalPositive"));
       return;
     }
     setSavingGoal(parsed);
@@ -371,13 +381,13 @@ const App: React.FC = () => {
       const res = await fetch(`${API_BASE}/api/analyze`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "AI 分析失败");
+        throw new Error(body.error || t("errAnalyzeFailed"));
       }
       const data: AnalyzeResponse = await res.json();
       setRoastData(data);
     } catch (e: unknown) {
       setRoastData(null);
-      setError(e instanceof Error ? e.message : "AI 分析失败");
+      setError(e instanceof Error ? e.message : t("errAnalyzeFailed"));
     } finally {
       setIsAnalyzing(false);
     }
@@ -397,9 +407,14 @@ const App: React.FC = () => {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Wallet size={24} />
-            <span style={{ fontWeight: 600 }}>SaveWise</span>
+            <span style={{ fontWeight: 600 }}>{t("appName")}</span>
           </div>
-          <Smartphone size={20} opacity={0.6} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button type="button" onClick={() => { const next = language === "zh" ? "en" : "zh"; setLanguage(next); if (typeof window !== "undefined") window.localStorage.setItem(LANGUAGE_STORAGE_KEY, next); }} style={{ border: `1px solid ${subtleBorder}`, borderRadius: 999, padding: "3px 8px", fontSize: 11, background: isDark ? "rgba(15,23,42,0.75)" : "rgba(255,255,255,0.82)", color: "inherit", cursor: "pointer" }}>
+              🌐 {language === "zh" ? "EN" : "ZH"}
+            </button>
+            <Smartphone size={20} opacity={0.6} />
+          </div>
         </div>
 
         <motion.div layout style={{ borderRadius: 28, padding: "20px 20px 24px", marginBottom: 20, background: "linear-gradient(135deg, rgba(59,130,246,1), rgba(236,72,153,1))", boxShadow: "0 18px 45px rgba(15,23,42,0.35)", color: "#f9fafb", position: "relative", overflow: "hidden" }}>
@@ -407,7 +422,7 @@ const App: React.FC = () => {
           <div style={{ position: "relative" }}>
             <div style={{ display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center" }}>
               <button type="button" onClick={openGoalSetter} style={{ background: "transparent", border: "none", color: "inherit", padding: 0, cursor: "pointer", textAlign: "left" }}>
-                <span style={{ fontSize: 14, opacity: 0.9 }}>Total Balance</span>
+                <span style={{ fontSize: 14, opacity: 0.9 }}>{t("totalBalance")}</span>
               </button>
               <div style={{ display: "flex", gap: 6 }}>
                 {(["CAD", "CNY"] as Currency[]).map((c) => (
@@ -419,7 +434,7 @@ const App: React.FC = () => {
 
             <div style={{ marginTop: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, opacity: 0.92, marginBottom: 6 }}>
-                <span>存款目标 ¥{savingGoal.toLocaleString("zh-CN")}</span>
+                <span>{t("savingGoal")} ¥{savingGoal.toLocaleString(language === "zh" ? "zh-CN" : "en-CA")}</span>
                 <span>{goalProgress.toFixed(0)}%</span>
               </div>
               <div style={{ height: 10, borderRadius: 999, background: "rgba(255,255,255,0.28)", overflow: "hidden" }}>
@@ -428,12 +443,12 @@ const App: React.FC = () => {
             </div>
 
             <div style={{ marginTop: 10, display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, color: "rgba(34,197,94,1)", fontWeight: 600 }}>Income: +¥{(monthlyStats?.totalIncome ?? 0).toLocaleString("zh-CN")}</span>
-              <span style={{ fontSize: 12, color: "rgba(239,68,68,1)", fontWeight: 600 }}>Expense: -¥{(monthlyStats?.totalExpense ?? 0).toLocaleString("zh-CN")}</span>
+              <span style={{ fontSize: 12, color: "rgba(34,197,94,1)", fontWeight: 600 }}>{t("income")}: +¥{(monthlyStats?.totalIncome ?? 0).toLocaleString(language === "zh" ? "zh-CN" : "en-CA")}</span>
+              <span style={{ fontSize: 12, color: "rgba(239,68,68,1)", fontWeight: 600 }}>{t("expense")}: -¥{(monthlyStats?.totalExpense ?? 0).toLocaleString(language === "zh" ? "zh-CN" : "en-CA")}</span>
             </div>
             <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>{backendHealthy === null ? "Checking backend..." : backendHealthy ? "Backend · Connected" : "Backend · Offline"}</span>
-              <span>FX 1 CAD = {cadToCnyRate.toFixed(3)} CNY</span>
+              <span>{backendHealthy === null ? t("backendChecking") : backendHealthy ? t("backendConnected") : t("backendOffline")}</span>
+              <span>{t("fxRate")} {cadToCnyRate.toFixed(3)} CNY</span>
             </div>
           </div>
         </motion.div>
@@ -454,17 +469,17 @@ const App: React.FC = () => {
                 <div style={{ position: "relative", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600 }}>{icon}<span>{acc.name}</span></div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {acc.type === "liability" && isDueWithinFiveDays(acc.dueDate) && <AlertCircle size={18} color="rgba(239,68,68,1)" style={{ flexShrink: 0 }} aria-label="还款日临近" />}
-                    <div style={{ fontSize: 11, opacity: 0.7, padding: "3px 8px", borderRadius: 999, border: `1px solid ${subtleBorder}`, backgroundColor: isDark ? "rgba(15,23,42,0.8)" : "rgba(248,250,252,0.85)" }}>{useFxDisplay ? `${showCurrency} · 换算` : showCurrency}</div>
+                    {acc.type === "liability" && isDueWithinFiveDays(acc.dueDate) && <AlertCircle size={18} color="rgba(239,68,68,1)" style={{ flexShrink: 0 }} aria-label={t("dueSoon")} />}
+                    <div style={{ fontSize: 11, opacity: 0.7, padding: "3px 8px", borderRadius: 999, border: `1px solid ${subtleBorder}`, backgroundColor: isDark ? "rgba(15,23,42,0.8)" : "rgba(248,250,252,0.85)" }}>{useFxDisplay ? `${showCurrency} · ${t("converted")}` : showCurrency}</div>
                   </div>
                 </div>
                 <div style={{ position: "relative" }}><div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em" }}>{currencySymbol(showCurrency)} {showAmount.toLocaleString(showCurrency === "CNY" ? "zh-CN" : "en-CA", { maximumFractionDigits: 2 })}</div></div>
                 {acc.type === "liability" && (
                   <div style={{ marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 12, opacity: 0.86 }}>还款日：每月 {acc.dueDate || "未设置"} 号</span>
+                    <span style={{ fontSize: 12, opacity: 0.86 }}>{t("dueDatePerMonth")} {acc.dueDate || t("notSet")}</span>
                     {isDueWithinFiveDays(acc.dueDate) && (
                       <span style={{ fontSize: 11, color: "rgba(254,226,226,1)", background: "rgba(220,38,38,0.9)", padding: "3px 8px", borderRadius: 999, fontWeight: 700 }}>
-                        即将到期
+                        {t("dueSoon")}
                       </span>
                     )}
                   </div>
@@ -477,42 +492,42 @@ const App: React.FC = () => {
         <div style={{ marginTop: 14 }}>
           <button type="button" onClick={() => setIsAddingCard(true)} style={{ width: "100%", borderRadius: 16, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.76)" : "rgba(255,255,255,0.82)", color: isDark ? "#e2e8f0" : "#0f172a", padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)" }}>
             <Plus size={16} />
-            + 添加信用卡
+            {t("addCreditCard")}
           </button>
         </div>
       </div>
 
       {isSettingGoal && (
-        <div role="dialog" aria-modal="true" aria-label="设置存款目标" style={{ position: "fixed", inset: 0, zIndex: 55, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && setIsSettingGoal(false)}>
+        <div role="dialog" aria-modal="true" aria-label={t("setSavingGoal")} style={{ position: "fixed", inset: 0, zIndex: 55, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && setIsSettingGoal(false)}>
           <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 320, borderRadius: 24, padding: 24, background: cardBg, border: `1px solid ${subtleBorder}`, boxShadow: "0 24px 48px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>设置存款目标</div>
+            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>{t("setSavingGoal")}</div>
             <input type="number" inputMode="numeric" value={goalInput} onChange={(e) => setGoalInput(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "12px 16px", fontSize: 18, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
             <div style={{ marginTop: 16, display: "flex", gap: 12, justifyContent: "flex-end" }}>
-              <button type="button" onClick={() => setIsSettingGoal(false)} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>取消</button>
-              <button type="button" onClick={confirmGoal} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #3b82f6, #ec4899)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>保存</button>
+              <button type="button" onClick={() => setIsSettingGoal(false)} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{t("cancel")}</button>
+              <button type="button" onClick={confirmGoal} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #3b82f6, #ec4899)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{t("save")}</button>
             </div>
           </motion.div>
         </div>
       )}
 
       {isAddingCard && (
-        <div role="dialog" aria-modal="true" aria-label="添加信用卡" style={{ position: "fixed", inset: 0, zIndex: 58, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && setIsAddingCard(false)}>
+        <div role="dialog" aria-modal="true" aria-label={t("addCreditCardTitle")} style={{ position: "fixed", inset: 0, zIndex: 58, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && setIsAddingCard(false)}>
           <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 340, borderRadius: 24, padding: 24, background: cardBg, border: `1px solid ${subtleBorder}`, boxShadow: "0 24px 48px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ marginBottom: 14, fontSize: 16, fontWeight: 600 }}>添加信用卡</div>
+            <div style={{ marginBottom: 14, fontSize: 16, fontWeight: 600 }}>{t("addCreditCardTitle")}</div>
             <div style={{ marginBottom: 10 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>名称</label>
-              <input type="text" value={newCardName} onChange={(e) => setNewCardName(e.target.value)} placeholder="例如 BMO" style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
+              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("name")}</label>
+              <input type="text" value={newCardName} onChange={(e) => setNewCardName(e.target.value)} placeholder={t("exampleBMO")} style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
             </div>
             <div style={{ marginBottom: 10 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>初始欠款</label>
+              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("initialDebt")}</label>
               <input type="number" inputMode="decimal" value={newCardBalance} onChange={(e) => setNewCardBalance(e.target.value)} placeholder="0" style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
             </div>
             <div style={{ marginBottom: 10 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>还款日 (1-31)</label>
-              <input type="number" min={1} max={31} inputMode="numeric" value={newCardDueDate} onChange={(e) => setNewCardDueDate(e.target.value)} placeholder="如 10" style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
+              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("dueDate")}</label>
+              <input type="number" min={1} max={31} inputMode="numeric" value={newCardDueDate} onChange={(e) => setNewCardDueDate(e.target.value)} placeholder={t("exampleDueDate")} style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
             </div>
             <div style={{ marginBottom: 16 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>原生币种</label>
+              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("nativeCurrency")}</label>
               <div style={{ display: "flex", gap: 8 }}>
                 {(["CAD", "CNY"] as Currency[]).map((c) => (
                   <button key={c} type="button" onClick={() => setNewCardCurrency(c)} style={{ flex: 1, borderRadius: 10, border: `1px solid ${subtleBorder}`, background: newCardCurrency === c ? "linear-gradient(135deg, #3b82f6, #22c55e)" : "transparent", color: "inherit", padding: "8px 10px", cursor: "pointer", fontWeight: 600 }}>{c}</button>
@@ -520,34 +535,34 @@ const App: React.FC = () => {
               </div>
             </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
-              <button type="button" onClick={() => setIsAddingCard(false)} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>取消</button>
-              <button type="button" onClick={createCreditCard} disabled={isCreatingCard} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #22c55e, #4ade80)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: isCreatingCard ? "not-allowed" : "pointer", opacity: isCreatingCard ? 0.7 : 1 }}>{isCreatingCard ? "创建中..." : "创建"}</button>
+              <button type="button" onClick={() => setIsAddingCard(false)} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{t("cancel")}</button>
+              <button type="button" onClick={createCreditCard} disabled={isCreatingCard} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #22c55e, #4ade80)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: isCreatingCard ? "not-allowed" : "pointer", opacity: isCreatingCard ? 0.7 : 1 }}>{isCreatingCard ? t("creating") : t("create")}</button>
             </div>
           </motion.div>
         </div>
       )}
 
       {reconcileAccount != null && (
-        <div role="dialog" aria-modal="true" aria-label="账户设置" style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && closeReconcile()}>
+        <div role="dialog" aria-modal="true" aria-label={t("accountSettings")} style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && closeReconcile()}>
           <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 320, borderRadius: 24, padding: 24, background: cardBg, border: `1px solid ${subtleBorder}`, boxShadow: "0 24px 48px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>{reconcileAccount} · 设置</div>
+            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>{reconcileAccount} · {t("accountSettings")}</div>
             <div style={{ marginBottom: 12 }}>
               <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
-                {selectedIsLiability ? "当前欠款" : "当前余额"}（原生币种：{selectedAccount?.currency ?? "CAD"}）
+                {selectedIsLiability ? t("currentDebt") : t("currentBalance")}（{t("nativeCurrencyInline")}：{selectedAccount?.currency ?? "CAD"}）
               </label>
               <input type="number" inputMode="decimal" value={reconcileInput} onChange={(e) => setReconcileInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") confirmReconcile(); if (e.key === "Escape") closeReconcile(); }} autoFocus style={{ width: "100%", boxSizing: "border-box", padding: "12px 16px", fontSize: 18, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
             </div>
             {selectedIsLiability && (
               <div style={{ marginBottom: 12 }}>
-                <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>还款日 (1-31)</label>
-                <input type="number" min={1} max={31} inputMode="numeric" placeholder="如 10" value={reconcileDueDate} onChange={(e) => setReconcileDueDate(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "12px 16px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
+                <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("dueDate")}</label>
+                <input type="number" min={1} max={31} inputMode="numeric" placeholder={t("exampleDueDate")} value={reconcileDueDate} onChange={(e) => setReconcileDueDate(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "12px 16px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
               </div>
             )}
             <div style={{ marginBottom: 16 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>主显示币种</label>
+              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("displayCurrency")}</label>
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8 }}>
                 <input type="checkbox" checked={reconcileUseFxDisplay} onChange={(e) => setReconcileUseFxDisplay(e.target.checked)} />
-                开启换算显示
+                {t("enableConversion")}
               </label>
               <div style={{ display: "flex", gap: 8 }}>
                 {(["CAD", "CNY"] as Currency[]).map((c) => (
@@ -556,23 +571,23 @@ const App: React.FC = () => {
               </div>
             </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
-              <button type="button" onClick={closeReconcile} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>取消</button>
-              <button type="button" onClick={confirmReconcile} disabled={isReconciling} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #22c55e, #4ade80)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: isReconciling ? "not-allowed" : "pointer", opacity: isReconciling ? 0.7 : 1 }}>{isReconciling ? "同步中..." : "确认"}</button>
+              <button type="button" onClick={closeReconcile} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{t("cancel")}</button>
+              <button type="button" onClick={confirmReconcile} disabled={isReconciling} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #22c55e, #4ade80)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: isReconciling ? "not-allowed" : "pointer", opacity: isReconciling ? 0.7 : 1 }}>{isReconciling ? t("syncing") : t("confirm")}</button>
             </div>
           </motion.div>
         </div>
       )}
 
       {isRoastOpen && (
-        <div role="dialog" aria-modal="true" aria-label="AI 吐槽周报" style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(2,6,23,0.5)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }} onClick={(e) => e.target === e.currentTarget && setIsRoastOpen(false)}>
+        <div role="dialog" aria-modal="true" aria-label={t("roastTitle")} style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(2,6,23,0.5)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }} onClick={(e) => e.target === e.currentTarget && setIsRoastOpen(false)}>
           <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 360, borderRadius: 24, padding: 22, background: isDark ? "rgba(15,23,42,0.8)" : "rgba(255,255,255,0.8)", border: `1px solid ${subtleBorder}`, boxShadow: "0 24px 48px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700 }}><Sparkles size={18} /> AI 毒舌周报</div>
-              <button type="button" onClick={() => setIsRoastOpen(false)} style={{ border: "none", background: "transparent", color: isDark ? "#e5e7eb" : "#0f172a", cursor: "pointer" }}>关闭</button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700 }}><Sparkles size={18} /> {t("roastTitle")}</div>
+              <button type="button" onClick={() => setIsRoastOpen(false)} style={{ border: "none", background: "transparent", color: isDark ? "#e5e7eb" : "#0f172a", cursor: "pointer" }}>{t("close")}</button>
             </div>
-            <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 10 }}>近7天支出 {roastData?.expenseCount ?? 0} 笔，合计 ¥{(roastData?.weeklyTotal ?? 0).toLocaleString("zh-CN")}</div>
+            <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 10 }}>{t("weeklyExpensePrefix")} {roastData?.expenseCount ?? 0} {t("weeklyExpenseSuffix")} ¥{(roastData?.weeklyTotal ?? 0).toLocaleString(language === "zh" ? "zh-CN" : "en-CA")}</div>
             <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.65, fontSize: 15 }}>
-              {isAnalyzing ? "AI 正在磨刀霍霍，请稍等..." : roastData?.roast ?? "暂无分析结果"}
+              {isAnalyzing ? t("analyzingRoast") : roastData?.roast ?? t("noAnalysis")}
             </div>
           </motion.div>
         </div>
@@ -581,14 +596,14 @@ const App: React.FC = () => {
       <div style={{ position: "fixed", left: "max(16px, env(safe-area-inset-left))", right: "max(16px, env(safe-area-inset-right))", bottom: 0, paddingBottom: "max(12px, env(safe-area-inset-bottom))", maxWidth: "28rem", marginLeft: "auto", marginRight: "auto", zIndex: 40 }}>
         <motion.button whileTap={{ scale: 0.97 }} onClick={handleAnalyze} disabled={isAnalyzing} style={{ width: "100%", marginBottom: 10, borderRadius: 16, border: `1px solid ${isDark ? "rgba(96,165,250,0.45)" : "rgba(147,197,253,0.85)"}`, backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", background: isDark ? "rgba(30,41,59,0.76)" : "rgba(241,245,249,0.8)", color: isDark ? "#e2e8f0" : "#0f172a", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 14, fontWeight: 700, cursor: isAnalyzing ? "not-allowed" : "pointer" }}>
           <Sparkles size={16} />
-          {isAnalyzing ? "AI 吐槽中..." : "AI 吐槽"}
+          {isAnalyzing ? t("roastingButton") : t("roastButton")}
         </motion.button>
 
         <motion.div initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: 0.35 }} style={{ padding: "8px 10px", borderRadius: 999, backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", backgroundColor: isDark ? "rgba(15,23,42,0.88)" : "rgba(255,255,255,0.9)", border: `1px solid ${isDark ? "rgba(30,64,175,0.7)" : "rgba(191,219,254,0.9)"}`, boxShadow: "0 18px 45px rgba(15,23,42,0.35)", display: "flex", alignItems: "center", gap: 8 }}>
-          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }} placeholder="例如：今天中午在 BMO 信用卡刷了 35 加元吃饭" style={{ flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 14, color: isDark ? "#e5e7eb" : "#020617" }} />
+          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }} placeholder={t("recordPlaceholder")} style={{ flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 14, color: isDark ? "#e5e7eb" : "#020617" }} />
           <motion.button whileTap={{ scale: 0.9 }} onClick={handleSend} disabled={!input.trim() || isSending} style={{ borderRadius: 999, padding: "8px 14px", border: "none", display: "flex", alignItems: "center", gap: 6, cursor: !input.trim() || isSending ? "not-allowed" : "pointer", opacity: !input.trim() || isSending ? 0.6 : 1, background: "linear-gradient(135deg, #22c55e, #22c55e, #4ade80)", color: "#f9fafb", fontSize: 13, fontWeight: 600, boxShadow: "0 10px 30px rgba(22,163,74,0.65)" }}>
             <Send size={16} />
-            <span>{isSending ? "记录中..." : "记一笔"}</span>
+            <span>{isSending ? t("recording") : t("record")}</span>
           </motion.button>
         </motion.div>
         {error && <div style={{ marginTop: 6, fontSize: 12, color: "#f97316", textAlign: "center" }}>{error}</div>}
