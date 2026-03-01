@@ -98,14 +98,22 @@ const App: React.FC = () => {
   const [roastData, setRoastData] = useState<AnalyzeResponse | null>(null);
   const t = useCallback((key: keyof typeof locales.zh) => locales[language][key], [language]);
 
+  const getCurrentUserId = useCallback((): string | null => {
+    if (typeof window === "undefined") return userId;
+    const latest = window.localStorage.getItem(USER_ID_STORAGE_KEY);
+    const normalized = latest?.trim() ?? "";
+    return normalized.length > 0 ? normalized : null;
+  }, [userId]);
+
   const apiFetch = useCallback(
     (path: string, init: RequestInit = {}) => {
-      if (!userId) throw new Error(t("errAuthRequired"));
+      const latestUserId = getCurrentUserId();
+      if (!latestUserId) throw new Error(t("errAuthRequired"));
       const headers = new Headers(init.headers ?? {});
-      headers.set("x-user-id", userId);
+      headers.set("x-user-id", latestUserId);
       return fetch(`${API_BASE}${path}`, { ...init, headers });
     },
-    [userId, t]
+    [getCurrentUserId, t]
   );
 
   const fetchAccounts = useCallback(async (): Promise<BackendAccount[] | null> => {
@@ -147,6 +155,17 @@ const App: React.FC = () => {
     if (typeof window === "undefined") return;
     const cached = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
     if (cached === "zh" || cached === "en") setLanguage(cached);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== USER_ID_STORAGE_KEY) return;
+      const latest = e.newValue?.trim() ?? "";
+      setUserId(latest.length > 0 ? latest : null);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const fetchMonthlyStats = useCallback(async () => {
@@ -429,6 +448,8 @@ const App: React.FC = () => {
       setAuthError(t("passcodeInvalid"));
       return;
     }
+    setAccountsFromApi([]);
+    setMonthlyStats(null);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(USER_ID_STORAGE_KEY, PRIVATE_PASSCODE);
     }
@@ -438,6 +459,8 @@ const App: React.FC = () => {
 
   const enterGuestMode = () => {
     const guestId = `guest_${Date.now()}`;
+    setAccountsFromApi([]);
+    setMonthlyStats(null);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(USER_ID_STORAGE_KEY, guestId);
     }

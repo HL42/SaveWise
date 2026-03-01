@@ -52,6 +52,7 @@ const AccountSchema: Schema<IAccount> = new Schema<IAccount>(
       required: true,
       default: "CAD",
     },
+
     balance: {
       type: Number,
       required: true,

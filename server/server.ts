@@ -211,6 +211,16 @@ function getUserId(req: Request): string | null {
   return v.length > 0 ? v : null;
 }
 
+// 所有 /api 接口都必须带 x-user-id，避免任何漏校验导致串数据
+app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  const userId = getUserId(req);
+  if (!userId) {
+    res.status(401).json({ error: "缺少 x-user-id" });
+    return;
+  }
+  next();
+});
+
 async function ensureDefaultAccounts(userId: string) {
   const created: unknown[] = [];
   const existing: unknown[] = [];
