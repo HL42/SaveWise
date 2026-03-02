@@ -39,7 +39,7 @@ if (!geminiApiKey) {
 
 const genAI = new GoogleGenerativeAI(geminiApiKey);
 
-const SYSTEM_PROMPT = `# Role
+const SYSTEM_PROMPT_TEMPLATE = `# Role
 You are a highly accurate finance parsing assistant.
 你是一个极度精确的财务解析助手。
 Your task is to convert user bookkeeping text (Chinese or English) into standard JSON.
@@ -47,7 +47,7 @@ Your task is to convert user bookkeeping text (Chinese or English) into standard
 
 # Constraints
 1. Output JSON only. No explanation text.
-2. Current reference time: 2026-02-26 (Thursday).
+2. Current reference time: {{CURRENT_REFERENCE_TIME}}.
 3. Any repayment intent such as "还信用卡", "credit card payment", "pay BMO card" must be type: "transfer", and target_account must be "credit_card" or the matched liability card.
 4. If the input mentions an account name (e.g. BMO), prioritize matching the exact account from "当前可用账户列表 / available accounts list".
 5. Category must be stored in English (e.g. "food", "shopping", "transport", "repayment", "salary", "transfer", "utilities", "entertainment", "other").
@@ -71,13 +71,13 @@ Your task is to convert user bookkeeping text (Chinese or English) into standard
 
 # Examples
 Input: "用借记卡还了600信用卡"
-Output: {"amount": 600, "type": "transfer", "category": "repayment", "account": "debit_card", "target_account": "credit_card", "date": "2026-02-26", "note": "还信用卡"}
+Output: {"amount": 600, "type": "transfer", "category": "repayment", "account": "debit_card", "target_account": "credit_card", "date": "{{CURRENT_DATE}}", "note": "还信用卡"}
 
 Input: "信用卡刷了100买衣服"
-Output: {"amount": 100, "type": "expense", "category": "shopping", "account": "credit_card", "target_account": null, "date": "2026-02-26", "note": "衣服"}
+Output: {"amount": 100, "type": "expense", "category": "shopping", "account": "credit_card", "target_account": null, "date": "{{CURRENT_DATE}}", "note": "衣服"}
 
 Input: "Spent 5 on coffee"
-Output: {"amount": 5, "type": "expense", "category": "food", "account": "debit_card", "target_account": null, "date": "2026-02-26", "note": "coffee"}
+Output: {"amount": 5, "type": "expense", "category": "food", "account": "debit_card", "target_account": null, "date": "{{CURRENT_DATE}}", "note": "coffee"}
 
 Respond with VALID JSON ONLY.`;
 
@@ -167,6 +167,25 @@ function serializeAccount(acc: {
     currency: acc.currency,
     displayCurrency: acc.displayCurrency ?? acc.currency,
   };
+}
+
+function formatYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function toLocalNoonFromYmd(ymd: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const monthIndex = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  if (!Number.isInteger(y) || !Number.isInteger(monthIndex) || !Number.isInteger(day)) return null;
+  const d = new Date(y, monthIndex, day, 12, 0, 0, 0);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
 }
 
 async function getCadCnyRate(): Promise<FxRatePayload> {
@@ -280,11 +299,17 @@ app.post(
       ? await Account.find({ userId }, { name: 1, type: 1 }).lean()
       : accountDocs;
     const accountNames = refreshedDocs.map((a) => a.name);
+    const now = new Date();
+    const currentDate = formatYmd(now);
+    const currentReferenceTime = `${currentDate} (${now.toLocaleDateString("en-CA", { weekday: "long" })})`;
+    const systemPrompt = SYSTEM_PROMPT_TEMPLATE
+      .replace(/{{CURRENT_REFERENCE_TIME}}/g, currentReferenceTime)
+      .replace(/{{CURRENT_DATE}}/g, currentDate);
 
     let parsed: ParsedTransactionPayload;
 
     try {
-      // 1. 使用你列表里最稳的 3.0 Flash 模型
+      // 使用稳定可用模型，避免 preview 名称导致降级到 mock 分支
       const model = genAI.getGenerativeModel({
         model: "gemini-3-flash-preview",
       });
@@ -293,7 +318,7 @@ app.post(
       const dynamicAccountsPrompt = `当前可用账户列表（name / type）：\n${refreshedDocs
         .map((acc) => `- ${acc.name} (${acc.type})`)
         .join("\n")}`;
-      const finalPrompt = `${SYSTEM_PROMPT}\n\n${dynamicAccountsPrompt}\n\n当前用户输入: "${text}"\n请只输出 JSON。`;
+      const finalPrompt = `${systemPrompt}\n\n${dynamicAccountsPrompt}\n\n当前用户输入: "${text}"\n请只输出 JSON。`;
 
       const result = await model.generateContent(finalPrompt);
       const response = await result.response;
@@ -309,10 +334,10 @@ app.post(
       parsed = {
         amount: 10,
         type: "expense",
-        category: "测试",
+        category: "other",
         account: "wechat",
         target_account: null,
-        date: "2026-02-26",
+        date: currentDate,
         note: "AI暂时休息，这是模拟入账",
       };
     }
@@ -400,7 +425,7 @@ app.post(
           type: parsed.type,
           category: parsed.category,
           account: sourceAccount._id,
-          date: parsed.date ? new Date(parsed.date) : new Date(),
+          date: parsed.date ? toLocalNoonFromYmd(parsed.date) ?? now : now,
           note: parsed.note ?? undefined,
         }],
         { session }
@@ -567,7 +592,7 @@ app.post(
       account: (tx.account as { name?: string } | undefined)?.name ?? "未知账户",
     }));
 
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
     const prompt = `${WEEKLY_ROAST_SYSTEM_PROMPT}\n\n以下是用户最近7天支出数据(JSON)：\n${JSON.stringify(
       {
         weeklyTotal,
