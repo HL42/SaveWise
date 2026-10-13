@@ -8,6 +8,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Build-only fixtures; CI does not connect to this URL or deploy artifacts.
+      VITE_SUPABASE_URL: https://example.supabase.co
+      VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_fixture_not_real
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -1,19 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
-const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
-function isPublicKey(value: string): boolean {
-  if (value.startsWith("sb_publishable_")) return true;
-  try {
-    const encoded = value.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    return JSON.parse(atob(encoded)).role === "anon";
-  } catch {
-    return false;
-  }
-}
-// Reject accidentally configured admin keys rather than bundling a privileged client.
+import { readPublicConfig } from "./publicConfig";
+export const publicConfig = readPublicConfig(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+);
 export const supabase =
-  url && key && isPublicKey(key)
-    ? createClient(url, key, {
+  publicConfig.status === "ready"
+    ? createClient(publicConfig.url, publicConfig.key, {
         auth: {
           persistSession: true,
           autoRefreshToken: true,

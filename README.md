@@ -36,13 +36,13 @@ npm --prefix client run dev -- --host 127.0.0.1
 
 不能将 secret / service_role key 放入客户端。项目 URL 和公开 key 是浏览器配置，财务访问权限由身份验证与数据库规则控制。
 
-个人使用：在 Supabase Dashboard → Authentication → Users 创建自己的用户。应用不开放注册。首次登录填写当前余额、信用卡欠款及已知账单；真实旧账不自动导入。
+页面提供邮箱密码注册、邮箱确认和重新发送确认邮件；每个人有独立账号和账本。正式给其他人使用前，需要在 Supabase 配置自定义 SMTP。个人账号也可在 Authentication → Users 创建。首次登录填写当前余额、信用卡欠款及已知账单；真实旧账不自动导入。
 
 ## 数据库与登录配置
 
 项目 `edgcercowznfxekrmlbt` 的迁移 `20261013000100` 已于 2026-10-12（America/Toronto）应用。云端只读结构核验通过：6 张 RLS 表、9 个已认证业务 RPC、2 个不开放的内部函数；匿名角色无读权限，客户端无直接写表权限。
 
-已配置关闭公开注册，Site URL 为 `https://save-wise-theta.vercel.app`，允许该站点及两个本地开发地址登录回调。邮件确认、MFA 和其他未声明设置保持原样。
+2026-10-13 已按多人使用需求开放注册并保持邮箱确认，Site URL 为 `https://save-wise-theta.vercel.app`，允许该站点及两个本地开发地址登录回调。邮件确认、MFA 和其他未声明设置保持原样。
 
 ```sh
 npm run db:verify
@@ -59,9 +59,9 @@ npm run auth:diff
 npm run check
 ```
 
-运行 15 项本地数据库/金额/日期测试、前端 lint 和前后端构建。GitHub Actions 对 push 和 PR 执行同样检查；CI 不访问云端财务数据，也不执行云端迁移。
+运行 19 项本地数据库/金额/日期/公开配置测试、前端 lint 和前后端构建。GitHub Actions 对 push 和 PR 执行同样检查；CI 不访问云端财务数据，也不执行云端迁移。
 
-前端托管项目根目录为 `client`，构建命令 `npm run build`，输出 `dist`，Node.js 版本为 24。配置 `VITE_SUPABASE_URL`、`VITE_SUPABASE_PUBLISHABLE_KEY` 后重新构建。Git push 是否自动发布取决于托管平台的 Git 集成，不等于已验证线上版本。
+前端托管项目根目录为 `client`，构建命令 `npm run build`，输出 `dist`，Node.js 版本为 24。生产构建缺失或错误配置会直接失败，避免发布无法登录的页面。配置 `VITE_SUPABASE_URL`、`VITE_SUPABASE_PUBLISHABLE_KEY` 后重新构建。Git push 是否自动发布取决于托管平台的 Git 集成，不等于已验证线上版本。
 
 旧 Render 服务应更新为兼容服务器或停用。更新之前，旧代码的身份校验问题仍可能在线上存在。
 
@@ -75,3 +75,11 @@ npm run check
 - 本地 PGlite 测试不替代实际邮件登录验收和多连接并发压力测试。
 
 个人复盘：[为什么这样改，以及下一步](docs/RECAP.md)。变更记录：[CHANGELOG](CHANGELOG.md)。
+
+## 手机打开仍提示“尚未配置 Supabase”？
+
+这是前端构建缺少客户端配置，不是数据库未建好。手机不需要创建 `.env` 文件。
+
+在 Vercel 的 **Production** 环境配置 `VITE_SUPABASE_URL` 和 `VITE_SUPABASE_PUBLISHABLE_KEY` 后，必须重新部署；只重启本地开发服务或仅保存变量不会更新线上静态 JS。公开 key 可以使用 Publishable 或 legacy anon key，不能使用 secret/service_role key。更新后关闭手机原页面再打开正式网址。
+
+公开注册还需自定义 SMTP。Supabase 默认邮件服务只允许项目团队邮箱且有严格限额，不能当作公共注册邮件服务。[官方邮件说明](https://supabase.com/docs/guides/auth/auth-smtp)

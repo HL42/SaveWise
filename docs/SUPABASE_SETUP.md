@@ -41,15 +41,15 @@ npm run supabase -- link --project-ref edgcercowznfxekrmlbt --agent no
 
 ### 2. 创建自己的登录账号
 
-如果你尚未创建登录用户，打开 Supabase Dashboard → Authentication → Users → Add user，创建自己的邮箱用户和密码，并按 Dashboard 流程完成邮箱确认。已有用户直接登录，无需重复创建。应用支持邮箱密码登录，不提供开放注册入口。
+如果你尚未创建登录用户，打开 Supabase Dashboard → Authentication → Users → Add user，创建自己的邮箱用户和密码，并按 Dashboard 流程完成邮箱确认。已有用户直接登录，无需重复创建。应用支持邮箱密码登录、注册及邮箱验证；注册确认邮件可以重新发送。
 
-云端已关闭公开注册；之后需要多人使用时，由你创建或邀请用户。每个用户从零开始独立设置自己的账本。
+2026-10-13 已按多人使用需求开放注册，保留邮箱确认。每个用户注册、确认后自行初始化账本。每个用户从零开始独立设置自己的账本。
 
 邮箱链接登录是可选方式。已配置以下云端 Auth 设置：
 
 - Site URL：`https://save-wise-theta.vercel.app`
 - 允许回调：该网站、`http://127.0.0.1:5173`、`http://localhost:5173`
-- 公开注册关闭；邮件确认、MFA 及其他未声明的配置未改动。
+- 公开注册开放，邮箱确认保持开启；MFA 及其他未声明的配置未改动。
 
 云端最小配置文件为 `deploy/supabase/config.toml`。检查差异用 `npm run auth:diff`；`remote-only` 表示未声明且保留的远端设置，不代表必须覆盖。确需改动这些声明字段时，先审查差异，再执行 `npm run auth:push`。不要直接推送用于本地开发的完整 `supabase/config.toml`。
 
@@ -131,4 +131,16 @@ npm run db:verify
 
 已核验迁移历史、RLS、表权限、函数权限、固定 search_path、首页 STABLE 快照及三个已授权 Auth 设置。云端核验只读系统目录，未读取 `auth.users` 或任何真实财务记录；没有在生产创建虚构 A/B 用户。A/B 数据隔离测试在本地 PostgreSQL 中完成。
 
-还需要你完成的用户步骤：自己的登录账号、托管平台的两个公开客户端环境变量、上线后的真实登录及首次设置。旧 MongoDB 数据保留原样；历史搬迁另行预览确认。
+上线后仍需用户自己注册/登录并填写首次余额。生产环境变量已配置，实际部署结果以本次发布核验为准。旧 MongoDB 数据保留原样；历史搬迁另行预览确认。
+
+## 公开注册邮件：必须准备 SMTP
+
+当前核查发现项目未启用自定义 SMTP。Supabase 的默认发信服务只服务项目团队授权邮箱，不能保证其他人的注册验证邮件可发送。
+
+在 Supabase → Authentication → SMTP Settings 配置自己的邮件服务、发信地址及域名。SMTP 密码只填在 Supabase 服务端配置中，不能放入 Vercel 的 `VITE_*` 变量或提交 Git。不要为了让注册看似成功而关闭邮箱确认。[官方说明](https://supabase.com/docs/guides/auth/auth-smtp)
+
+配置后，由你用自己控制的另一个邮箱验收“注册 → 收信 → 确认 → 登录 → 空账本首次设置”。本次没有向真实邮箱发送测试邮件、没有注册真实或生产虚构用户，也没有读取现有用户账目。
+
+## 手机看到旧的配置提示
+
+正式站点的变量在构建时写入 JS。Vercel Production 中补齐两项变量后要重新部署；手机不能通过创建本地 `.env` 修复线上页面。新版本生产构建会拒绝缺失 URL、错误 key 或服务端管理 key，避免再次发布配置为空的站点。

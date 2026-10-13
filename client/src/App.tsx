@@ -10,7 +10,7 @@ import {
   CreditCard,
   CheckCircle2,
 } from "lucide-react";
-import { supabase } from "./supabase";
+import { publicConfig, supabase } from "./supabase";
 import {
   available,
   cents,
@@ -98,6 +98,8 @@ function App() {
   const [recordTarget, setRecordTarget] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const activeOwner = useRef<string | null>(null);
   const loadGeneration = useRef(0);
   const submitting = useRef(false);
@@ -113,6 +115,8 @@ function App() {
     setRecordSource("");
     setRecordTarget("");
     setPassword("");
+    setConfirmPassword("");
+    setAuthMode("login");
     setEmail("");
   }, []);
 
@@ -220,16 +224,77 @@ function App() {
 
   async function authenticate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!supabase) return;
+    if (!supabase || busy) return;
+    if (
+      authMode === "signup" &&
+      (password.length < 8 || password !== confirmPassword)
+    ) {
+      setNotice(password.length < 8 ? "注册密码至少 8 位" : "两次密码不一致");
+      return;
+    }
     setBusy(true);
     setNotice("");
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-    setBusy(false);
-    if (error) setNotice(`登录失败：${error.message}`);
-    else setPassword("");
+    try {
+      if (authMode === "signup") {
+        const { error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: { emailRedirectTo: window.location.origin },
+        });
+        if (error) {
+          setNotice(
+            error.code === "signup_disabled"
+              ? "注册暂未开放，请稍后再试或联系应用维护者。"
+              : error.code === "email_address_not_authorized"
+                ? "注册确认邮件服务尚未开放给外部邮箱，请联系应用维护者配置发信服务。"
+                : error.code === "over_email_send_rate_limit"
+                  ? "确认邮件发送频率受限，请稍后再试。"
+                  : `注册未完成：${error.message}`,
+          );
+        } else {
+          setPassword("");
+          setConfirmPassword("");
+          setNotice(
+            "请查收注册确认邮件，点击验证链接后登录；若未收到，可使用下方的重新发送确认邮件。",
+          );
+        }
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+        if (error) setNotice(`登录失败：${error.message}`);
+        else setPassword("");
+      }
+    } catch {
+      setNotice("登录服务请求失败，请重试；密码不会被保存。");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function resendConfirmation() {
+    if (!supabase || busy || !email.trim()) {
+      setNotice("请先填写邮箱");
+      return;
+    }
+    setBusy(true);
+    setNotice("");
+    try {
+      const { error } = await supabase.auth.resend({
+        type: "signup",
+        email: email.trim(),
+        options: { emailRedirectTo: window.location.origin },
+      });
+      setNotice(
+        error
+          ? `邮件暂未发送：${error.message}`
+          : "确认邮件请求已提交，请检查邮箱和垃圾邮件。",
+      );
+    } catch {
+      setNotice("邮件服务请求失败，请稍后重试。");
+    } finally {
+      setBusy(false);
+    }
   }
   async function magicLink() {
     if (!supabase || !email.trim()) {
@@ -533,14 +598,43 @@ function App() {
       {!owner ? (
         <main className="auth panel">
           <div className="eyebrow">自己的账，自己看</div>
-          <h1>欢迎回来</h1>
+          <h1>{authMode === "signup" ? "创建自己的账本" : "欢迎回来"}</h1>
           <p>用真实登录保护余额。演示数据与个人账户完全隔离。</p>
           {!supabase && (
             <div className="warning">
-              尚未配置 Supabase。复制 client/.env.example 为
-              .env.local，填入公开 Publishable key 后重启开发服务。
+              {import.meta.env.DEV
+                ? `Supabase 客户端配置${publicConfig.status === "missing" ? "缺失" : "无效"}。请检查 client/.env.local 中的 URL 和公开 Publishable / anon key，并重启开发服务。`
+                : "登录服务尚未配置，请联系应用维护者；无需在自己的设备创建 .env 文件。"}
             </div>
           )}
+          <div className="tabs" aria-label="登录或注册">
+            <button
+              type="button"
+              className={authMode === "login" ? "active" : ""}
+              disabled={busy}
+              onClick={() => {
+                setAuthMode("login");
+                setPassword("");
+                setConfirmPassword("");
+                setNotice("");
+              }}
+            >
+              登录
+            </button>
+            <button
+              type="button"
+              className={authMode === "signup" ? "active" : ""}
+              disabled={busy}
+              onClick={() => {
+                setAuthMode("signup");
+                setPassword("");
+                setConfirmPassword("");
+                setNotice("");
+              }}
+            >
+              注册
+            </button>
+          </div>
           <form onSubmit={authenticate}>
             <label>
               邮箱
@@ -556,20 +650,48 @@ function App() {
               密码
               <input
                 type="password"
-                autoComplete="current-password"
+                autoComplete={
+                  authMode === "signup" ? "new-password" : "current-password"
+                }
+                minLength={authMode === "signup" ? 8 : undefined}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
               />
             </label>
+            {authMode === "signup" && (
+              <label>
+                再次输入密码
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+              </label>
+            )}
             <button
               className="primary"
               disabled={!supabase || busy || !authReady}
             >
-              {busy ? "登录中…" : "登录"}
+              {busy
+                ? "处理中…"
+                : authMode === "signup"
+                  ? "注册并验证邮箱"
+                  : "登录"}
             </button>
           </form>
           <div className="actions">
+            {authMode === "signup" && (
+              <button
+                onClick={() => void resendConfirmation()}
+                disabled={!supabase || busy}
+              >
+                重新发送确认邮件
+              </button>
+            )}
             <button
               onClick={() => void magicLink()}
               disabled={!supabase || busy}
@@ -581,7 +703,7 @@ function App() {
             </button>
           </div>
           <p className="muted">
-            个人使用：先在 Supabase 的 Authentication → Users 中创建自己的用户。
+            每个人使用独立账号和账本；注册完成并确认邮箱后，从自己的当前余额开始。
           </p>
           {notice && (
             <div role="status" className="warning">

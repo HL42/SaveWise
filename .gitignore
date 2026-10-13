@@ -16,3 +16,7 @@ artifacts/
 # Supabase CLI caches, including alternate cloud-config workdirs
 **/.temp/
 **/.branches/
+
+# Vercel local project links and downloaded settings
+.vercel/
+.vercel
