@@ -1,160 +1,77 @@
-# SaveWise — A Bilingual AI-Driven Personal Finance Ecosystem
+# SaveWise
 
-**Value Proposition:** SaveWise is a production-style full-stack finance platform that combines bilingual LLM transaction parsing, multi-credit-card liability accounting, and real-time CAD/CNY valuation to deliver accurate net-worth intelligence for Canadian daily life.
+给自己用的轻量理财账本：从今天的真实余额开始，知道未来 30 天能花多少、信用卡什么时候还。
 
-URL: https://save-wise-theta.vercel.app/
+## 当前实现
 
-<img width="471" height="953" alt="Screenshot 2026-02-26 at 8 44 10 PM" src="https://github.com/user-attachments/assets/0c9916be-0e20-43ec-8228-9fef62a01f8c" />
+- React + TypeScript 前端，Supabase Auth 登录、PostgreSQL 存储。
+- 服务端验证的身份配合 RLS 隔离用户；不使用前端口令或 `x-user-id` 作为身份凭证。
+- 银行余额、信用卡欠款作为起始快照，不计入收入或消费，无需补齐以前的账。
+- 信用卡总欠款、账单金额、剩余应还、实际到期日期分别保存。
+- 支出、收入、退款、转账、还款、对账和撤销；金额按整数分保存，CAD/CNY 分别统计。
+- 部分还款按最早到期账单分配；还款不计消费，退款抵减支出。
+- 历史补录不重复影响已对账余额；统计说明记录区间与完整性。
+- 首页显示可支配金额、还款清单、数据更新时间和同步状态。
+- 写入有事务、幂等和版本保护；网络结果未知可以重试原请求。
+- 账号独立缓存，退出或切换清理缓存与草稿；演示为本地只读虚构数据。
 
----
+首页和普通记账直接请求 Supabase，不依赖 Render 或 Gemini。旧 Express 财务接口返回 410，保留 `/health` 兼容检查；新版不读写 MongoDB。
 
-## Overview
+## 快速开始
 
-SaveWise is designed for users who want fast, conversational bookkeeping without sacrificing accounting correctness.
+使用 Node.js 24 LTS（最低 22.12）。
 
-Instead of forcing rigid form-based workflows, the platform accepts natural-language financial input (English/Chinese), resolves intent into structured transactions, updates account balances with asset/liability-safe logic, and visualizes portfolio value in a dual-currency context.
-
-## ✨ What does it do?
-
-- Chat to Log: No more complex forms. Type "Spent $5 at Tims" or "用微信还了 600 信用卡" and the AI handles the rest.
-
-- Bilingual AI: Powered by Gemini 2.0, it understands both English and Chinese and maps them to the correct accounts.
-
-- Canadian Friendly: Specifically designed for local use cases. Supports Canadian banks (BMO, RBC, etc.) and real-time CAD/CNY exchange rates.
-
-- Smart Credit Card Logic: It treats credit cards as debt, not assets. When you "repay" a card, it correctly balances your net worth without double-counting expenses.
-
-- Roast My Spending: An AI feature that looks at your week and gives you a sarcastic (but helpful) critique of your spending.
-
----
-
-## Tech Stack
-
-| Layer             | Technology            | Why It Matters                                                              |
-| ----------------- | --------------------- | --------------------------------------------------------------------------- |
-| Frontend          | **React 18**          | Component-driven UI architecture for responsive financial dashboards        |
-| Frontend Language | **TypeScript**        | Static typing for safer domain logic and refactoring at scale               |
-| Styling           | **Tailwind CSS**      | Rapid, consistent UI implementation for glassmorphism-grade interfaces      |
-| Backend           | **Node.js (Express)** | Lightweight, scalable API surface for transactional workflows               |
-| Database          | **MongoDB**           | Flexible document schema for evolving finance + account metadata            |
-| AI/NLP            | **Google Gemini 2.0** | Bilingual intent extraction and transaction structuring from free-form text |
-| Live FX           | **Frankfurter API**   | realtime CAD/CNY FX valuation for CAD/CNY                                   |
-
----
-
-## Architecture Highlights
-
-### 1. Bilingual LLM Integration
-
-SaveWise uses a prompt-engineered parsing layer to normalize natural language into deterministic JSON.
-
-**Key outcomes:**
-
-- Handles both Chinese and English user inputs
-  - Example: `Spent 5 on coffee` and `买了5块钱咖啡`
-- Classifies intent into transaction types:
-  - `expense`, `income`, `transfer`
-- Resolves repayment semantics robustly:
-  - Credit-card repayment is always interpreted as `transfer`, not expense inflation
-- Supports dynamic account names beyond defaults (e.g., **BMO**, **RBC**, custom cards)
-
-This required iterative prompt design + backend safeguards to prevent misclassification in ambiguous statements.
-
----
-
-### 2. Financial Architecture (Asset/Liability Correctness)
-
-A core engineering challenge was preserving financial truth under mixed account classes.
-
-#### Account Semantics
-
-- **Asset accounts** (cash/debit/WeChat wallet): represent owned funds
-- **Liability accounts** (credit cards): represent debt outstanding
-
-#### Balance Mutation Rules
-
-- **Expense**
-  - Asset: `balance -= amount`
-  - Liability: `balance += amount` (debt increases)
-- **Income**
-  - Asset: `balance += amount`
-  - Liability: `balance -= amount` (debt decreases)
-- **Transfer**
-  - Source always decreases
-  - Target liability decreases for repayments
-
-This model ensures **Net Worth accuracy** and avoids the common anti-pattern where card repayment is double-counted as expense.
-
----
-
-### 3. Real-time FX Valuation (CAD/CNY)
-
-SaveWise integrates live conversion via:
-
-- `https://api.frankfurter.app/latest?from=CAD&to=CNY`
-
-#### Total Balance Formula (CAD base)
-
-\[
-\text{Total} = (\text{CAD Assets} + \frac{\text{CNY Assets}}{\text{FX}}) - (\text{CAD Liabilities} + \frac{\text{CNY Liabilities}}{\text{FX}})
-\]
-
-This separation prevents data drift and guarantees auditability of account-level balances.
-
----
-
-## Feature Highlights
-
-- **Bilingual LLM Integration**
-
-  - Conversational bookkeeping in English/Chinese with structured transaction output
-
-- **Multi-Credit-Card Management**
-
-  - Dynamic liability account creation (e.g., BMO, RBC)
-  - Due-date tracking and repayment-safe transfer behavior
-
-- **Real-time FX Valuation**
-
-  - CAD/CNY market rate integration for valuation-only conversion
-
-- **Behavioral Finance Analysis**
-
-  - “**Roast My Spending**” module for AI-generated weekly spending critique
-
-- **PWA for Native-like Experience**
-  - Mobile-first UX designed for quick-add flows and habitual usage patterns
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js 18+
-- MongoDB (local or Atlas)
-- Gemini API key
-
-### Environment Variables
-
-Create `.env` in `server/`:
-
-```bash
-MONGODB_URI=your_mongodb_uri
-GEMINI_API_KEY=your_gemini_key
-PORT=5005
+```sh
+npm ci
+npm --prefix client ci
+npm --prefix server ci
+cp client/.env.example client/.env.local
 ```
 
-### Run Locally
+在 `client/.env.local` 填入项目的公开 Publishable key 或 legacy anon key，再启动：
 
-```bash
-# Backend
-cd server
-npm install
-npm run dev
-
-# Frontend
-cd ../client
-npm install
-npm run dev
+```sh
+npm --prefix client run dev -- --host 127.0.0.1
 ```
+
+不能将 secret / service_role key 放入客户端。项目 URL 和公开 key 是浏览器配置，财务访问权限由身份验证与数据库规则控制。
+
+个人使用：在 Supabase Dashboard → Authentication → Users 创建自己的用户。应用不开放注册。首次登录填写当前余额、信用卡欠款及已知账单；真实旧账不自动导入。
+
+## 数据库与登录配置
+
+项目 `edgcercowznfxekrmlbt` 的迁移 `20261013000100` 已于 2026-10-12（America/Toronto）应用。云端只读结构核验通过：6 张 RLS 表、9 个已认证业务 RPC、2 个不开放的内部函数；匿名角色无读权限，客户端无直接写表权限。
+
+已配置关闭公开注册，Site URL 为 `https://save-wise-theta.vercel.app`，允许该站点及两个本地开发地址登录回调。邮件确认、MFA 和其他未声明设置保持原样。
+
+```sh
+npm run db:verify
+npm run auth:diff
+```
+
+本地完整配置在 `supabase/config.toml`。云端最小配置在 `deploy/supabase/config.toml`；不要把本地完整配置直接推送到生产。后续数据库变更用新增迁移，不能修改已应用的迁移或执行生产 `db reset`。
+
+完整操作步骤：[Supabase 配置与运行说明](docs/SUPABASE_SETUP.md)。
+
+## 验证与部署
+
+```sh
+npm run check
+```
+
+运行 15 项本地数据库/金额/日期测试、前端 lint 和前后端构建。GitHub Actions 对 push 和 PR 执行同样检查；CI 不访问云端财务数据，也不执行云端迁移。
+
+前端托管项目根目录为 `client`，构建命令 `npm run build`，输出 `dist`，Node.js 版本为 24。配置 `VITE_SUPABASE_URL`、`VITE_SUPABASE_PUBLISHABLE_KEY` 后重新构建。Git push 是否自动发布取决于托管平台的 Git 集成，不等于已验证线上版本。
+
+旧 Render 服务应更新为兼容服务器或停用。更新之前，旧代码的身份校验问题仍可能在线上存在。
+
+## 已知边界
+
+- 没有批量历史导入、银行同步、自动汇率、AI 功能或完整月份确认。
+- 最近交易展示 100 笔，尚未实现分页。
+- 界面时区默认 America/Toronto，尚未提供设置入口。
+- 还款按最早到期分配；银行分配不同或账单受退款影响时，需要核对账单。
+- 可支配金额是现金减预留和未来 30 天/逾期账单，不包含尚未知的未来账单；缺少账单时会提示。
+- 本地 PGlite 测试不替代实际邮件登录验收和多连接并发压力测试。
+
+个人复盘：[为什么这样改，以及下一步](docs/RECAP.md)。变更记录：[CHANGELOG](CHANGELOG.md)。

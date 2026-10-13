@@ -1,0 +1,6 @@
+# Only these Auth properties are applied. Unspecified cloud settings remain unchanged.
+project_id = "SaveWise"
+[auth]
+enable_signup = false
+site_url = "https://save-wise-theta.vercel.app"
+additional_redirect_urls = ["http://127.0.0.1:5173", "http://localhost:5173", "https://save-wise-theta.vercel.app"]

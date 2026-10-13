@@ -1,704 +1,1295 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
-import { Wallet, Smartphone, CreditCard, Banknote, Send, AlertCircle, Sparkles, Plus } from "lucide-react";
-import { LANGUAGE_STORAGE_KEY, locales } from "./locales";
-import type { Language } from "./locales";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
+import type { Session } from "@supabase/supabase-js";
+import {
+  Wallet,
+  Plus,
+  RefreshCw,
+  LogOut,
+  ArrowRight,
+  CreditCard,
+  CheckCircle2,
+} from "lucide-react";
+import { supabase } from "./supabase";
+import {
+  available,
+  cents,
+  demoDashboard,
+  dueLabel,
+  localDay,
+  money,
+} from "./finance";
+import type { Account, Currency, Dashboard, Statement } from "./finance";
 
-const API_BASE = import.meta.env.DEV
-  ? "http://localhost:5005"
-  : "https://savewise-backend.onrender.com";
-const SAVING_GOAL_STORAGE_KEY = "savewise_saving_goal";
-const DEFAULT_SAVING_GOAL = 10000;
-const USER_ID_STORAGE_KEY = "savewise_user_id";
-const PRIVATE_PASSCODE = "42";
-
-type Currency = "CAD" | "CNY";
-type AccountType = "asset" | "liability";
-
-type BackendAccount = {
-  _id: string;
+type Pending = { name: string; params: Record<string, unknown>; owner: string };
+type Opening = {
   name: string;
-  type: AccountType;
-  balance: number;
-  dueDate?: number;
+  kind: "asset" | "liability";
   currency: Currency;
-  displayCurrency?: Currency;
+  balance: string;
+  reserved: string;
+  statement: string;
+  remaining: string;
+  due: string;
 };
-
-type AccountsResponse = {
-  accounts: BackendAccount[];
-  fx: {
-    cadToCny: number;
-    fetchedAt: string;
-  };
+const emptyOpening = (): Opening => ({
+  name: "",
+  kind: "asset",
+  currency: "CAD",
+  balance: "0",
+  reserved: "0",
+  statement: "",
+  remaining: "",
+  due: "",
+});
+const labels: Record<string, string> = {
+  expense: "支出",
+  income: "收入",
+  refund: "退款",
+  transfer: "转账",
+  repayment: "还款",
+  adjustment: "对账调整",
 };
+const cacheKey = (owner: string) => `sw:dashboard:${owner}`;
+const pendingKey = (owner: string) => `sw:pending:${owner}`;
+function clearLocalFinance() {
+  for (const key of Object.keys(sessionStorage))
+    if (key.startsWith("sw:")) sessionStorage.removeItem(key);
+  for (const key of ["savewise_user_id", "savewise_saving_goal"])
+    localStorage.removeItem(key);
+}
+function saveLocal(key: string, value: unknown) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* Storage is optional. */
+  }
+}
+function readLocal<T>(key: string): T | null {
+  try {
+    return JSON.parse(sessionStorage.getItem(key) ?? "null") as T | null;
+  } catch {
+    return null;
+  }
+}
+function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [demo, setDemo] = useState(false);
+  const [snapshot, setSnapshot] = useState<{
+    owner: string;
+    data: Dashboard;
+  } | null>(null);
+  const [status, setStatus] = useState("等待登录");
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<Pending | null>(null);
+  const [modal, setModal] = useState<
+    "record" | "account" | "reconcile" | "statement" | "reserve" | null
+  >(null);
+  const [selected, setSelected] = useState<Account | null>(null);
+  const [selectedBill, setSelectedBill] = useState<Statement | null>(null);
+  const [openings, setOpenings] = useState<Opening[]>([
+    { ...emptyOpening(), name: "日常银行" },
+  ]);
+  const [recordKind, setRecordKind] = useState("expense");
+  const [recordSource, setRecordSource] = useState("");
+  const [recordTarget, setRecordTarget] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const activeOwner = useRef<string | null>(null);
+  const loadGeneration = useRef(0);
+  const submitting = useRef(false);
+  const owner = demo ? "demo" : (session?.user.id ?? null);
+  const data = snapshot?.owner === owner ? snapshot.data : null;
+  const today = data?.today ?? localDay();
 
-type MonthlyStats = {
-  totalIncome: number;
-  totalExpense: number;
-  year: number;
-  month: number;
-};
+  const clearDrafts = useCallback(() => {
+    setOpenings([{ ...emptyOpening(), name: "日常银行" }]);
+    setSelected(null);
+    setSelectedBill(null);
+    setRecordKind("expense");
+    setRecordSource("");
+    setRecordTarget("");
+    setPassword("");
+    setEmail("");
+  }, []);
 
-type AnalyzeResponse = {
-  roast: string;
-  weeklyTotal: number;
-  expenseCount: number;
-};
-
-const CORE_ORDER = ["WeChat", "Cash", "CreditCard", "DebitCard"];
-
-const currencySymbol = (c: Currency) => (c === "CNY" ? "¥" : "$");
-
-const convertAmount = (amount: number, from: Currency, to: Currency, cadToCny: number): number => {
-  if (from === to) return amount;
-  if (from === "CAD" && to === "CNY") return amount * cadToCny;
-  return amount / cadToCny;
-};
-
-const App: React.FC = () => {
-  const [isDark, setIsDark] = useState(false);
-  const [userId, setUserId] = useState<string | null>(() => {
-    if (typeof window === "undefined") return null;
-    const cached = window.localStorage.getItem(USER_ID_STORAGE_KEY);
-    return cached && cached.trim().length > 0 ? cached : null;
-  });
-  const [authInput, setAuthInput] = useState("");
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [language, setLanguage] = useState<Language>("zh");
-  const [backendHealthy, setBackendHealthy] = useState<boolean | null>(null);
-  const [accountsFromApi, setAccountsFromApi] = useState<BackendAccount[]>([]);
-  const [highlightKeys, setHighlightKeys] = useState<string[]>([]);
-  const [input, setInput] = useState("");
-  const [isSending, setIsSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [monthlyStats, setMonthlyStats] = useState<MonthlyStats | null>(null);
-
-  const [cadToCnyRate, setCadToCnyRate] = useState(5);
-  const [totalCurrency, setTotalCurrency] = useState<Currency>("CAD");
-
-  const [reconcileAccount, setReconcileAccount] = useState<string | null>(null);
-  const [reconcileInput, setReconcileInput] = useState("");
-  const [reconcileDueDate, setReconcileDueDate] = useState("");
-  const [reconcileDisplayCurrency, setReconcileDisplayCurrency] = useState<Currency>("CAD");
-  const [reconcileUseFxDisplay, setReconcileUseFxDisplay] = useState(false);
-  const [isReconciling, setIsReconciling] = useState(false);
-
-  const [isAddingCard, setIsAddingCard] = useState(false);
-  const [newCardName, setNewCardName] = useState("");
-  const [newCardBalance, setNewCardBalance] = useState("0");
-  const [newCardDueDate, setNewCardDueDate] = useState("");
-  const [newCardCurrency, setNewCardCurrency] = useState<Currency>("CAD");
-  const [isCreatingCard, setIsCreatingCard] = useState(false);
-
-  const [savingGoal, setSavingGoal] = useState(DEFAULT_SAVING_GOAL);
-  const [isSettingGoal, setIsSettingGoal] = useState(false);
-  const [goalInput, setGoalInput] = useState(String(DEFAULT_SAVING_GOAL));
-
-  const [isRoastOpen, setIsRoastOpen] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [roastData, setRoastData] = useState<AnalyzeResponse | null>(null);
-  const t = useCallback((key: keyof typeof locales.zh) => locales[language][key], [language]);
-
-  const getCurrentUserId = useCallback((): string | null => {
-    if (typeof window === "undefined") return userId;
-    const latest = window.localStorage.getItem(USER_ID_STORAGE_KEY);
-    const normalized = latest?.trim() ?? "";
-    return normalized.length > 0 ? normalized : null;
-  }, [userId]);
-
-  const apiFetch = useCallback(
-    (path: string, init: RequestInit = {}) => {
-      const latestUserId = getCurrentUserId();
-      if (!latestUserId) throw new Error(t("errAuthRequired"));
-      const headers = new Headers(init.headers ?? {});
-      headers.set("x-user-id", latestUserId);
-      return fetch(`${API_BASE}${path}`, { ...init, headers });
-    },
-    [getCurrentUserId, t]
-  );
-
-  const fetchAccounts = useCallback(async (): Promise<BackendAccount[] | null> => {
-    if (!userId) return null;
+  const refresh = useCallback(async (uid: string): Promise<boolean> => {
+    if (!supabase || activeOwner.current !== uid) return false;
+    const generation = ++loadGeneration.current;
+    setLoading(true);
+    setStatus("正在同步…");
+    let response;
     try {
-      const res = await apiFetch("/api/accounts");
-      if (!res.ok) throw new Error("Failed to load accounts");
-      const data: AccountsResponse = await res.json();
-      setAccountsFromApi(data.accounts);
-      setCadToCnyRate(data.fx.cadToCny);
-      return data.accounts;
-    } catch (e) {
-      console.error(e);
-      return null;
-    }
-  }, [apiFetch, userId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const listener = (e: MediaQueryListEvent) => setIsDark(e.matches);
-    setIsDark(mq.matches);
-    mq.addEventListener("change", listener);
-    return () => mq.removeEventListener("change", listener);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const cachedGoal = window.localStorage.getItem(SAVING_GOAL_STORAGE_KEY);
-    if (!cachedGoal) return;
-    const num = Number(cachedGoal);
-    if (!Number.isNaN(num) && num > 0) {
-      setSavingGoal(num);
-      setGoalInput(String(num));
-    }
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const cached = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
-    if (cached === "zh" || cached === "en") setLanguage(cached);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const onStorage = (e: StorageEvent) => {
-      if (e.key !== USER_ID_STORAGE_KEY) return;
-      const latest = e.newValue?.trim() ?? "";
-      setUserId(latest.length > 0 ? latest : null);
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, []);
-
-  const fetchMonthlyStats = useCallback(async () => {
-    if (!userId) return;
-    try {
-      const res = await apiFetch("/api/stats/monthly");
-      if (!res.ok) return;
-      const data: MonthlyStats = await res.json();
-      setMonthlyStats(data);
+      response = await supabase.rpc("sw_dashboard");
     } catch {
-      // ignore
-    }
-  }, [apiFetch, userId]);
-
-  useEffect(() => {
-    if (!userId) {
-      setBackendHealthy(null);
-      setAccountsFromApi([]);
-      return;
-    }
-    const init = async () => {
-      try {
-        const healthRes = await apiFetch("/health");
-        setBackendHealthy(healthRes.ok);
-        if (!healthRes.ok) return;
-        await fetchAccounts();
-        await fetchMonthlyStats();
-      } catch (e) {
-        console.error(e);
-        setBackendHealthy(false);
+      if (
+        activeOwner.current === uid &&
+        generation === loadGeneration.current
+      ) {
+        setLoading(false);
+        setStatus("同步失败 · 显示上次数据");
+        setNotice("同步失败：网络中断，请重试");
       }
-    };
-    init();
-  }, [apiFetch, fetchAccounts, fetchMonthlyStats, userId]);
-
-  const accounts = useMemo(() => {
-    const orderMap = new Map(CORE_ORDER.map((name, i) => [name, i]));
-    return [...accountsFromApi].sort((a, b) => {
-      const ai = orderMap.has(a.name) ? (orderMap.get(a.name) as number) : 999;
-      const bi = orderMap.has(b.name) ? (orderMap.get(b.name) as number) : 999;
-      if (ai !== bi) return ai - bi;
-      return a.name.localeCompare(b.name);
-    });
-  }, [accountsFromApi]);
-
-  const isDueWithinFiveDays = useCallback((dueDate: number | undefined) => {
-    if (dueDate == null) return false;
-    const today = new Date();
-    const thisMonthDue = new Date(today.getFullYear(), today.getMonth(), dueDate);
-    let nextDue = thisMonthDue;
-    if (thisMonthDue < today) {
-      nextDue = new Date(today.getFullYear(), today.getMonth() + 1, dueDate);
+      return false;
     }
-    const daysLeft = Math.ceil((nextDue.getTime() - today.getTime()) / (24 * 60 * 60 * 1000));
-    return daysLeft <= 5;
+    const { data: result, error } = response;
+    if (activeOwner.current !== uid || generation !== loadGeneration.current)
+      return false;
+    setLoading(false);
+    if (error) {
+      setStatus("同步失败 · 显示上次数据");
+      setNotice(
+        error.code === "PGRST202"
+          ? "数据库还未应用迁移，请按 docs/SUPABASE_SETUP.md 完成配置。"
+          : `同步失败：${error.message}`,
+      );
+      return false;
+    }
+    const dashboard = result as Dashboard;
+    setSnapshot({ owner: uid, data: dashboard });
+    saveLocal(cacheKey(uid), dashboard);
+    setStatus("已同步");
+    setNotice((previous) =>
+      /^(同步失败|数据库还未|已保存，但)/.test(previous) ? "" : previous,
+    );
+    return true;
   }, []);
 
-  const totalBalance = useMemo(() => {
-    // CAD 基准：CAD 直接相加；CNY 按实时汇率除回 CAD 后再汇总
-    const totalCad = accountsFromApi.reduce((sum, acc) => {
-      const nativeCadAmount = acc.currency === "CAD" ? acc.balance : acc.balance / cadToCnyRate;
-      return sum + (acc.type === "asset" ? nativeCadAmount : -nativeCadAmount);
-    }, 0);
-    return totalCurrency === "CAD" ? totalCad : totalCad * cadToCnyRate;
-  }, [accountsFromApi, cadToCnyRate, totalCurrency]);
-
-  const goalProgress = useMemo(() => {
-    const goalInDisplayCurrency = convertAmount(savingGoal, "CNY", totalCurrency, cadToCnyRate);
-    if (goalInDisplayCurrency <= 0) return 0;
-    return Math.max(0, Math.min(100, (totalBalance / goalInDisplayCurrency) * 100));
-  }, [savingGoal, totalBalance, totalCurrency, cadToCnyRate]);
-
-  const handleSend = async () => {
-    if (!input.trim() || isSending) return;
-    if (!userId) {
-      setError(t("errAuthRequired"));
+  useEffect(() => {
+    if (!supabase) {
+      queueMicrotask(() => setAuthReady(true));
       return;
     }
-    setIsSending(true);
-    setError(null);
-
-    try {
-      const prev = [...accountsFromApi];
-      const res = await apiFetch("/api/record", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: input.trim() }),
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || t("errRecordFailed"));
-      }
-
-      const next = await fetchAccounts();
-      if (next) {
-        const changed: string[] = [];
-        next.forEach((a) => {
-          const oldAcc = prev.find((x) => x.name === a.name);
-          if (oldAcc && oldAcc.balance !== a.balance) changed.push(a.name);
-        });
-        if (changed.length > 0) {
-          setHighlightKeys(changed);
-          setTimeout(() => setHighlightKeys([]), 800);
+    let alive = true;
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, next) => {
+        if (!alive) return;
+        const uid = next?.user.id ?? null;
+        const changed = activeOwner.current !== uid;
+        if (changed && activeOwner.current) clearLocalFinance();
+        activeOwner.current = uid;
+        setSession(next);
+        setAuthReady(true);
+        if (changed) {
+          loadGeneration.current++;
+          setSnapshot(null);
+          setModal(null);
+          clearDrafts();
+          setLoading(false);
+          setStatus(uid ? "正在同步…" : "等待登录");
+          setNotice("");
+          setBusy(false);
+          const saved = uid ? readLocal<Dashboard>(cacheKey(uid)) : null;
+          if (saved && uid) setSnapshot({ owner: uid, data: saved });
+          setPending(uid ? readLocal<Pending>(pendingKey(uid)) : null);
         }
-        await fetchMonthlyStats();
+        // Do not call Supabase auth methods while its auth callback is holding a lock.
+        if (uid)
+          window.setTimeout(() => {
+            if (alive) void refresh(uid);
+          }, 0);
+      },
+    );
+    supabase.auth.getSession().catch(() => {
+      if (alive) {
+        setAuthReady(true);
+        setNotice("无法恢复登录，请重新登录");
       }
-      setInput("");
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : t("errSendFailed"));
-    } finally {
-      setIsSending(false);
-    }
-  };
-
-  const openReconcile = (name: string) => {
-    const acc = accounts.find((a) => a.name === name);
-    if (!acc) return;
-    setReconcileAccount(name);
-    setReconcileInput(String(acc.balance));
-    setReconcileDueDate(acc.type === "liability" && acc.dueDate != null ? String(acc.dueDate) : "");
-    const currentDisplay = acc.displayCurrency ?? acc.currency;
-    const useFx = currentDisplay !== acc.currency;
-    setReconcileUseFxDisplay(useFx);
-    setReconcileDisplayCurrency(useFx ? currentDisplay : acc.currency === "CAD" ? "CNY" : "CAD");
-  };
-
-  const closeReconcile = () => {
-    setReconcileAccount(null);
-    setReconcileInput("");
-    setReconcileDueDate("");
-    setReconcileDisplayCurrency("CAD");
-    setReconcileUseFxDisplay(false);
-  };
-
-  const confirmReconcile = async () => {
-    if (!reconcileAccount) return;
-    if (!userId) {
-      setError(t("errAuthRequired"));
-      return;
-    }
-    const num = parseFloat(reconcileInput);
-    if (Number.isNaN(num)) return;
-
-    const selected = accounts.find((a) => a.name === reconcileAccount);
-    const dueNum = reconcileDueDate.trim() === "" ? undefined : parseInt(reconcileDueDate, 10);
-
-    // 重要：balance 始终按账户原生货币存储，不做任何汇率转换
-    const nativeBalance = num;
-    const nextDisplayCurrency =
-      selected == null
-        ? reconcileDisplayCurrency
-        : reconcileUseFxDisplay
-          ? reconcileDisplayCurrency
-          : selected.currency;
-    const payload: { balance: number; dueDate?: number; displayCurrency?: Currency } = {
-      balance: nativeBalance,
-      displayCurrency: nextDisplayCurrency,
+    });
+    return () => {
+      alive = false;
+      listener.subscription.unsubscribe();
     };
+  }, [refresh, clearDrafts]);
 
-    if (selected?.type === "liability" && dueNum != null && !Number.isNaN(dueNum) && dueNum >= 1 && dueNum <= 31) {
-      payload.dueDate = dueNum;
+  useEffect(() => {
+    const onFocus = () => {
+      const uid = activeOwner.current;
+      if (uid && uid !== "demo") void refresh(uid);
+    };
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("online", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("online", onFocus);
+    };
+  }, [refresh]);
+
+  async function authenticate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase) return;
+    setBusy(true);
+    setNotice("");
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+    setBusy(false);
+    if (error) setNotice(`登录失败：${error.message}`);
+    else setPassword("");
+  }
+  async function magicLink() {
+    if (!supabase || !email.trim()) {
+      setNotice("请先填写邮箱");
+      return;
     }
+    setBusy(true);
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: {
+        shouldCreateUser: false,
+        emailRedirectTo: window.location.origin,
+      },
+    });
+    setBusy(false);
+    setNotice(error ? error.message : "登录链接已发送，请检查邮箱。");
+  }
+  async function logout() {
+    activeOwner.current = null;
+    loadGeneration.current++;
+    clearLocalFinance();
+    setSnapshot(null);
+    setPending(null);
+    setModal(null);
+    clearDrafts();
+    setLoading(false);
+    setStatus("等待登录");
+    setNotice("");
+    setDemo(false);
+    setSession(null);
+    if (supabase) {
+      const { error } = await supabase.auth.signOut({ scope: "local" });
+      if (error)
+        setNotice(`退出会话失败，请关闭当前页面并重试：${error.message}`);
+    }
+  }
+  function enterDemo() {
+    if (session) return;
+    activeOwner.current = "demo";
+    setDemo(true);
+    setSnapshot({ owner: "demo", data: demoDashboard() });
+    setStatus("虚构数据 · 不连接数据库");
+    setNotice("演示只展示虚构数据，登录后才能记账。");
+  }
 
-    setIsReconciling(true);
+  async function mutate(
+    request: Pending,
+    onSuccess?: () => void,
+  ): Promise<boolean> {
+    if (
+      !supabase ||
+      request.owner !== activeOwner.current ||
+      submitting.current ||
+      demo
+    )
+      return false;
+    submitting.current = true;
+    setBusy(true);
+    setNotice("");
+    setPending(request);
+    saveLocal(pendingKey(request.owner), request);
     try {
-      const res = await apiFetch(`/api/accounts/${encodeURIComponent(reconcileAccount)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const { error } = await supabase.rpc(request.name, request.params);
+      if (request.owner !== activeOwner.current) return false;
+      if (error) {
+        const uncertain =
+          !error.code ||
+          error.code.startsWith("5") ||
+          /fetch|network|timeout|abort/i.test(error.message);
+        if (!uncertain) {
+          setPending(null);
+          sessionStorage.removeItem(pendingKey(request.owner));
+        }
+        setNotice(
+          uncertain
+            ? "结果暂未确认。输入已保留，请用“查询并重试”恢复，避免重复记账。"
+            : `未保存：${error.message}`,
+        );
+        return false;
+      }
+      setPending(null);
+      sessionStorage.removeItem(pendingKey(request.owner));
+      onSuccess?.();
+      setNotice("已保存。正在刷新余额…");
+      const synced = await refresh(request.owner);
+      if (request.owner === activeOwner.current)
+        setNotice(
+          synced
+            ? "已保存并同步"
+            : "已保存，但余额刷新失败。正在显示上次数据，请刷新。",
+        );
+      return true;
+    } catch {
+      if (request.owner === activeOwner.current)
+        setNotice("网络中断，结果未知。请查询并重试原请求。");
+      return false;
+    } finally {
+      submitting.current = false;
+      if (request.owner === activeOwner.current) setBusy(false);
+    }
+  }
+  async function retry() {
+    if (!pending || !supabase) return;
+    // The database deduplicates the exact original request, even if the previous response was lost.
+    await mutate(pending, () => setModal(null));
+  }
+  async function setup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!owner) return;
+    try {
+      const accounts = openings.map((a) => ({
+        name: a.name.trim(),
+        kind: a.kind,
+        currency: a.currency,
+        balance_cents: cents(a.balance),
+        reserved_cents: a.kind === "asset" ? cents(a.reserved) : 0,
+        ...(a.due
+          ? {
+              statement_cents: cents(a.statement),
+              remaining_cents: cents(a.remaining),
+              due_on: a.due,
+            }
+          : {}),
+      }));
+      await mutate({
+        name: "sw_setup",
+        owner,
+        params: {
+          p_key: crypto.randomUUID(),
+          p_started_on: today,
+          p_timezone: "America/Toronto",
+          p_accounts: accounts,
+        },
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || t("errUpdateFailed"));
-      }
-      const updated: BackendAccount = await res.json();
-      setAccountsFromApi((prev) => prev.map((acc) => (acc.name === updated.name ? { ...acc, ...updated } : acc)));
-      await fetchAccounts();
-      closeReconcile();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : t("errUpdateFailed"));
-    } finally {
-      setIsReconciling(false);
+    } catch (error) {
+      setNotice((error as Error).message);
     }
-  };
-
-  const createCreditCard = async () => {
-    if (!userId) {
-      setError(t("errAuthRequired"));
+  }
+  function open(which: typeof modal, account?: Account) {
+    if (demo) {
+      setNotice("演示不会写入数据库。请退出演示并登录自己的账户。");
       return;
     }
-    const name = newCardName.trim();
-    const bal = Number(newCardBalance);
-    const due = newCardDueDate.trim() === "" ? undefined : Number(newCardDueDate);
-    if (!name) {
-      setError(t("errCreateCardName"));
+    if (pending) {
+      setNotice("请先恢复上一次结果未知的请求。");
       return;
     }
-    if (Number.isNaN(bal)) {
-      setError(t("errCreateCardBalance"));
-      return;
+    setSelected(account ?? null);
+    setSelectedBill(null);
+    setRecordKind("expense");
+    const last = owner ? readLocal<string>(`sw:last-account:${owner}`) : null;
+    setRecordSource(
+      account?.id ??
+        data?.accounts.find((a) => a.id === last)?.id ??
+        data?.accounts.find((a) => a.kind === "asset")?.id ??
+        data?.accounts[0]?.id ??
+        "",
+    );
+    setRecordTarget("");
+    setModal(which);
+    setNotice("");
+  }
+  function changeRecordKind(kind: string) {
+    setRecordKind(kind);
+    if (
+      ["income", "transfer", "repayment"].includes(kind) &&
+      data?.accounts.find((a) => a.id === recordSource)?.kind !== "asset"
+    ) {
+      setRecordSource(data?.accounts.find((a) => a.kind === "asset")?.id ?? "");
     }
-
-    setIsCreatingCard(true);
-    setError(null);
+    if (
+      kind === "repayment" &&
+      data?.accounts.find((a) => a.id === recordTarget)?.kind !== "liability"
+    )
+      setRecordTarget("");
+    if (
+      kind === "transfer" &&
+      data?.accounts.find((a) => a.id === recordTarget)?.kind !== "asset"
+    )
+      setRecordTarget("");
+  }
+  async function submitModal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!owner || !data || pending) return;
+    const form = new FormData(event.currentTarget);
+    const value = (key: string) => String(form.get(key) ?? "");
     try {
-      const res = await apiFetch("/api/accounts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          type: "liability",
-          balance: bal,
-          dueDate: due,
-          currency: newCardCurrency,
-          displayCurrency: newCardCurrency,
-        }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || t("errCreateCardFailed"));
+      const key = crypto.randomUUID();
+      let name = "";
+      let params: Record<string, unknown> = {};
+      if (modal === "record") {
+        const transfer = ["transfer", "repayment"].includes(recordKind);
+        const source = data.accounts.find((a) => a.id === recordSource);
+        const target = data.accounts.find((a) => a.id === recordTarget);
+        const amount = cents(value("amount"));
+        if (recordKind === "income" && source?.kind === "liability")
+          throw new Error("信用卡退款请使用退款类型");
+        if (amount <= 0) throw new Error("金额必须大于零");
+        name = "sw_record";
+        params = {
+          p_key: key,
+          p_kind: recordKind,
+          p_source: recordSource,
+          p_target: transfer ? recordTarget : null,
+          p_amount: amount,
+          p_target_amount: transfer
+            ? source?.currency === target?.currency
+              ? amount
+              : cents(value("targetAmount"))
+            : null,
+          p_on: value("date"),
+          p_note: value("note"),
+          p_history_only: form.has("historyOnly"),
+        };
+      } else if (modal === "reconcile" && selected) {
+        name = "sw_reconcile";
+        params = {
+          p_key: key,
+          p_account: selected.id,
+          p_balance: cents(value("balance")),
+          p_version: selected.version,
+          p_on: today,
+          p_note: value("note"),
+        };
+      } else if (modal === "reserve" && selected) {
+        name = "sw_reserve";
+        params = {
+          p_key: key,
+          p_account: selected.id,
+          p_reserved: cents(value("reserved")),
+          p_version: selected.version,
+        };
+      } else if (modal === "statement" && selected) {
+        name = selectedBill ? "sw_update_statement" : "sw_statement";
+        params = {
+          p_key: key,
+          ...(selectedBill
+            ? { p_statement: selectedBill.id, p_version: selectedBill.version }
+            : { p_account: selected.id }),
+          p_amount: cents(value("statement")),
+          p_remaining: cents(value("remaining")),
+          p_due: value("due"),
+        };
+      } else if (modal === "account") {
+        name = "sw_add_account";
+        params = {
+          p_key: key,
+          p_name: value("name"),
+          p_kind: value("kind"),
+          p_currency: value("currency"),
+          p_balance: cents(value("balance")),
+          p_reserved: 0,
+          p_on: today,
+        };
       }
-      await fetchAccounts();
-      setIsAddingCard(false);
-      setNewCardName("");
-      setNewCardBalance("0");
-      setNewCardDueDate("");
-      setNewCardCurrency("CAD");
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : t("errCreateCardFailed"));
-    } finally {
-      setIsCreatingCard(false);
+      if (name)
+        await mutate({ name, params, owner }, () => {
+          if (name === "sw_record")
+            saveLocal(`sw:last-account:${owner}`, recordSource);
+          setModal(null);
+        });
+    } catch (error) {
+      setNotice((error as Error).message);
     }
-  };
-
-  const openGoalSetter = () => {
-    setGoalInput(String(savingGoal));
-    setIsSettingGoal(true);
-  };
-
-  const confirmGoal = () => {
-    const parsed = Number(goalInput);
-    if (Number.isNaN(parsed) || parsed <= 0) {
-      setError(t("errGoalPositive"));
+  }
+  async function reverse(id: string) {
+    if (!owner || demo || pending) return;
+    if (
+      !window.confirm(
+        "撤销这笔交易？记录会保留；已对账前的交易不会再次改变当前余额。",
+      )
+    )
       return;
-    }
-    setSavingGoal(parsed);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(SAVING_GOAL_STORAGE_KEY, String(parsed));
-    }
-    setIsSettingGoal(false);
-  };
-
-  const handleAnalyze = async () => {
-    if (!userId) {
-      setError(t("errAuthRequired"));
-      return;
-    }
-    setIsRoastOpen(true);
-    setIsAnalyzing(true);
-    setError(null);
-    try {
-      const res = await apiFetch("/api/analyze", { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || t("errAnalyzeFailed"));
-      }
-      const data: AnalyzeResponse = await res.json();
-      setRoastData(data);
-    } catch (e: unknown) {
-      setRoastData(null);
-      setError(e instanceof Error ? e.message : t("errAnalyzeFailed"));
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const enterPrivateSpace = () => {
-    if (authInput.trim() !== PRIVATE_PASSCODE) {
-      setAuthError(t("passcodeInvalid"));
-      return;
-    }
-    setAccountsFromApi([]);
-    setMonthlyStats(null);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(USER_ID_STORAGE_KEY, PRIVATE_PASSCODE);
-    }
-    setAuthError(null);
-    setUserId(PRIVATE_PASSCODE);
-  };
-
-  const enterGuestMode = () => {
-    const guestId = `guest_${Date.now()}`;
-    setAccountsFromApi([]);
-    setMonthlyStats(null);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(USER_ID_STORAGE_KEY, guestId);
-    }
-    setAuthError(null);
-    setUserId(guestId);
-  };
-
-  const bgColor = isDark ? "#020617" : "#f9fafb";
-  const cardBg = isDark ? "rgba(15,23,42,0.96)" : "rgba(255,255,255,0.96)";
-  const subtleBorder = isDark ? "rgba(148,163,184,0.3)" : "rgba(226,232,240,0.9)";
-  const bottomBarSpacing = "calc(160px + env(safe-area-inset-bottom))";
-
-  const selectedAccount = accounts.find((a) => a.name === reconcileAccount);
-  const selectedIsLiability = selectedAccount?.type === "liability";
+    await mutate({ name: "sw_reverse", owner, params: { p_transaction: id } });
+  }
+  function updateOpening(index: number, patch: Partial<Opening>) {
+    setOpenings((list) =>
+      list.map((a, i) => (i === index ? { ...a, ...patch } : a)),
+    );
+  }
+  const source = data?.accounts.find((a) => a.id === recordSource);
+  const target = data?.accounts.find((a) => a.id === recordTarget);
+  const transfer = ["transfer", "repayment"].includes(recordKind);
 
   return (
-    <div style={{ height: "100dvh", overflow: "hidden", width: "100%", maxWidth: "28rem", marginLeft: "auto", marginRight: "auto", display: "flex", flexDirection: "column", background: bgColor, color: isDark ? "#e5e7eb" : "#020617", fontFamily: '-apple-system, BlinkMacSystemFont, system-ui, "SF Pro Text", "SF Pro Display", sans-serif' }}>
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch", paddingLeft: "max(16px, env(safe-area-inset-left))", paddingRight: "max(16px, env(safe-area-inset-right))", paddingTop: "max(16px, env(safe-area-inset-top))", paddingBottom: bottomBarSpacing }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Wallet size={24} />
-            <span style={{ fontWeight: 600 }}>{t("appName")}</span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button type="button" onClick={() => { const next = language === "zh" ? "en" : "zh"; setLanguage(next); if (typeof window !== "undefined") window.localStorage.setItem(LANGUAGE_STORAGE_KEY, next); }} style={{ border: `1px solid ${subtleBorder}`, borderRadius: 999, padding: "3px 8px", fontSize: 11, background: isDark ? "rgba(15,23,42,0.75)" : "rgba(255,255,255,0.82)", color: "inherit", cursor: "pointer" }}>
-              🌐 {language === "zh" ? "EN" : "ZH"}
-            </button>
-            <Smartphone size={20} opacity={0.6} />
+    <div className="shell">
+      <header>
+        <div className="brand">
+          <Wallet size={26} />
+          <div>
+            <strong>SaveWise</strong>
+            <small>把钱管清楚，生活轻一点</small>
           </div>
         </div>
-
-        <motion.div layout style={{ borderRadius: 28, padding: "20px 20px 24px", marginBottom: 20, background: "linear-gradient(135deg, rgba(59,130,246,1), rgba(236,72,153,1))", boxShadow: "0 18px 45px rgba(15,23,42,0.35)", color: "#f9fafb", position: "relative", overflow: "hidden" }}>
-          <div style={{ position: "absolute", inset: "-40%", background: "radial-gradient(circle at 0% 0%, rgba(255,255,255,0.22), transparent 60%)", opacity: 0.8, pointerEvents: "none" }} />
-          <div style={{ position: "relative" }}>
-            <div style={{ display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center" }}>
-              <button type="button" onClick={openGoalSetter} style={{ background: "transparent", border: "none", color: "inherit", padding: 0, cursor: "pointer", textAlign: "left" }}>
-                <span style={{ fontSize: 14, opacity: 0.9 }}>{t("totalBalance")}</span>
-              </button>
-              <div style={{ display: "flex", gap: 6 }}>
-                {(["CAD", "CNY"] as Currency[]).map((c) => (
-                  <button key={c} type="button" onClick={() => setTotalCurrency(c)} style={{ borderRadius: 999, border: "none", padding: "4px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", color: totalCurrency === c ? "#0f172a" : "rgba(248,250,252,0.88)", background: totalCurrency === c ? "rgba(248,250,252,0.95)" : "rgba(15,23,42,0.3)" }}>{c}</button>
-                ))}
-              </div>
-            </div>
-            <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: "-0.04em", marginTop: 4 }}>{currencySymbol(totalCurrency)} {totalBalance.toLocaleString("en-CA", { maximumFractionDigits: 2 })}</div>
-
-            <div style={{ marginTop: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, opacity: 0.92, marginBottom: 6 }}>
-                <span>{t("savingGoal")} ¥{savingGoal.toLocaleString(language === "zh" ? "zh-CN" : "en-CA")}</span>
-                <span>{goalProgress.toFixed(0)}%</span>
-              </div>
-              <div style={{ height: 10, borderRadius: 999, background: "rgba(255,255,255,0.28)", overflow: "hidden" }}>
-                <motion.div initial={false} animate={{ width: `${goalProgress}%` }} transition={{ duration: 0.4 }} style={{ height: "100%", borderRadius: 999, background: "linear-gradient(90deg, rgba(34,197,94,0.95), rgba(16,185,129,0.95))", boxShadow: "0 4px 12px rgba(16,185,129,0.45)" }} />
-              </div>
-            </div>
-
-            <div style={{ marginTop: 10, display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, color: "rgba(34,197,94,1)", fontWeight: 600 }}>{t("income")}: +¥{(monthlyStats?.totalIncome ?? 0).toLocaleString(language === "zh" ? "zh-CN" : "en-CA")}</span>
-              <span style={{ fontSize: 12, color: "rgba(239,68,68,1)", fontWeight: 600 }}>{t("expense")}: -¥{(monthlyStats?.totalExpense ?? 0).toLocaleString(language === "zh" ? "zh-CN" : "en-CA")}</span>
-            </div>
-            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>{backendHealthy === null ? t("backendChecking") : backendHealthy ? t("backendConnected") : t("backendOffline")}</span>
-              <span>{t("fxRate")} {cadToCnyRate.toFixed(3)} CNY</span>
-            </div>
-          </div>
-        </motion.div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-          {accounts.map((acc) => {
-            const isHighlighted = highlightKeys.includes(acc.name);
-            const icon = acc.name === "WeChat" ? <Smartphone size={20} /> : acc.name === "Cash" ? <Banknote size={20} /> : <CreditCard size={20} />;
-            const showCurrency = acc.displayCurrency ?? acc.currency;
-            const useFxDisplay = showCurrency !== acc.currency;
-            const showAmount =
-              !useFxDisplay
-                ? acc.balance
-                : convertAmount(acc.balance, acc.currency, showCurrency, cadToCnyRate);
-            return (
-              <motion.div key={acc.name} role="button" tabIndex={0} onClick={() => openReconcile(acc.name)} onKeyDown={(e) => e.key === "Enter" && openReconcile(acc.name)} layout initial={false} animate={isHighlighted ? { boxShadow: ["0 0 0 0 rgba(34,197,94,0.0)", "0 0 22px 6px rgba(34,197,94,0.85)", "0 0 0 0 rgba(34,197,94,0.0)"], scale: [1, 1.03, 1] } : { boxShadow: "0 10px 25px rgba(15,23,42,0.12)", scale: 1 }} transition={{ duration: 0.6 }} style={{ borderRadius: 22, padding: "14px 14px 16px", background: cardBg, border: `1px solid ${subtleBorder}`, display: "flex", flexDirection: "column", justifyContent: "space-between", position: "relative", overflow: "hidden", cursor: "pointer" }}>
-                <div style={{ position: "absolute", inset: "-30%", background: "radial-gradient(circle at 0% 0%, rgba(148,163,184,0.22), transparent 60%)", opacity: isDark ? 0.9 : 0.7, pointerEvents: "none" }} />
-                <div style={{ position: "relative", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600 }}>{icon}<span>{acc.name}</span></div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {acc.type === "liability" && isDueWithinFiveDays(acc.dueDate) && <AlertCircle size={18} color="rgba(239,68,68,1)" style={{ flexShrink: 0 }} aria-label={t("dueSoon")} />}
-                    <div style={{ fontSize: 11, opacity: 0.7, padding: "3px 8px", borderRadius: 999, border: `1px solid ${subtleBorder}`, backgroundColor: isDark ? "rgba(15,23,42,0.8)" : "rgba(248,250,252,0.85)" }}>{useFxDisplay ? `${showCurrency} · ${t("converted")}` : showCurrency}</div>
-                  </div>
-                </div>
-                <div style={{ position: "relative" }}><div style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em" }}>{currencySymbol(showCurrency)} {showAmount.toLocaleString(showCurrency === "CNY" ? "zh-CN" : "en-CA", { maximumFractionDigits: 2 })}</div></div>
-                {acc.type === "liability" && (
-                  <div style={{ marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 12, opacity: 0.86 }}>{t("dueDatePerMonth")} {acc.dueDate || t("notSet")}</span>
-                    {isDueWithinFiveDays(acc.dueDate) && (
-                      <span style={{ fontSize: 11, color: "rgba(254,226,226,1)", background: "rgba(220,38,38,0.9)", padding: "3px 8px", borderRadius: 999, fontWeight: 700 }}>
-                        {t("dueSoon")}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </motion.div>
-            );
-          })}
-        </div>
-
-        <div style={{ marginTop: 14 }}>
-          <button type="button" onClick={() => setIsAddingCard(true)} style={{ width: "100%", borderRadius: 16, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.76)" : "rgba(255,255,255,0.82)", color: isDark ? "#e2e8f0" : "#0f172a", padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)" }}>
-            <Plus size={16} />
-            {t("addCreditCard")}
+        {owner && (
+          <button className="quiet" onClick={() => void logout()}>
+            <LogOut size={16} /> {demo ? "退出演示" : "退出"}
           </button>
-        </div>
-      </div>
-
-      {isSettingGoal && (
-        <div role="dialog" aria-modal="true" aria-label={t("setSavingGoal")} style={{ position: "fixed", inset: 0, zIndex: 55, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && setIsSettingGoal(false)}>
-          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 320, borderRadius: 24, padding: 24, background: cardBg, border: `1px solid ${subtleBorder}`, boxShadow: "0 24px 48px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>{t("setSavingGoal")}</div>
-            <input type="number" inputMode="numeric" value={goalInput} onChange={(e) => setGoalInput(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "12px 16px", fontSize: 18, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
-            <div style={{ marginTop: 16, display: "flex", gap: 12, justifyContent: "flex-end" }}>
-              <button type="button" onClick={() => setIsSettingGoal(false)} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{t("cancel")}</button>
-              <button type="button" onClick={confirmGoal} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #3b82f6, #ec4899)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{t("save")}</button>
+        )}
+      </header>
+      {!owner ? (
+        <main className="auth panel">
+          <div className="eyebrow">自己的账，自己看</div>
+          <h1>欢迎回来</h1>
+          <p>用真实登录保护余额。演示数据与个人账户完全隔离。</p>
+          {!supabase && (
+            <div className="warning">
+              尚未配置 Supabase。复制 client/.env.example 为
+              .env.local，填入公开 Publishable key 后重启开发服务。
             </div>
-          </motion.div>
-        </div>
-      )}
-
-      {isAddingCard && (
-        <div role="dialog" aria-modal="true" aria-label={t("addCreditCardTitle")} style={{ position: "fixed", inset: 0, zIndex: 58, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && setIsAddingCard(false)}>
-          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 340, borderRadius: 24, padding: 24, background: cardBg, border: `1px solid ${subtleBorder}`, boxShadow: "0 24px 48px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ marginBottom: 14, fontSize: 16, fontWeight: 600 }}>{t("addCreditCardTitle")}</div>
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("name")}</label>
-              <input type="text" value={newCardName} onChange={(e) => setNewCardName(e.target.value)} placeholder={t("exampleBMO")} style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
+          )}
+          <form onSubmit={authenticate}>
+            <label>
+              邮箱
+              <input
+                type="email"
+                autoComplete="username"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </label>
+            <label>
+              密码
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
+            <button
+              className="primary"
+              disabled={!supabase || busy || !authReady}
+            >
+              {busy ? "登录中…" : "登录"}
+            </button>
+          </form>
+          <div className="actions">
+            <button
+              onClick={() => void magicLink()}
+              disabled={!supabase || busy}
+            >
+              邮箱链接登录
+            </button>
+            <button onClick={enterDemo} disabled={busy || !authReady}>
+              查看虚构演示
+            </button>
+          </div>
+          <p className="muted">
+            个人使用：先在 Supabase 的 Authentication → Users 中创建自己的用户。
+          </p>
+          {notice && (
+            <div role="status" className="warning">
+              {notice}
             </div>
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("initialDebt")}</label>
-              <input type="number" inputMode="decimal" value={newCardBalance} onChange={(e) => setNewCardBalance(e.target.value)} placeholder="0" style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
+          )}
+        </main>
+      ) : (
+        <main>
+          <div className="sync">
+            <span className={status === "已同步" ? "ok" : ""}>{status}</span>
+            <button
+              className="quiet"
+              disabled={loading || demo}
+              onClick={() => {
+                if (owner) void refresh(owner);
+              }}
+            >
+              <RefreshCw size={14} className={loading ? "spin" : ""} /> 刷新
+            </button>
+          </div>
+          {notice && (
+            <div className="warning" role="status">
+              {notice}
             </div>
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("dueDate")}</label>
-              <input type="number" min={1} max={31} inputMode="numeric" value={newCardDueDate} onChange={(e) => setNewCardDueDate(e.target.value)} placeholder={t("exampleDueDate")} style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
+          )}
+          {pending && (
+            <div className="warning">
+              有一笔请求的结果尚未确认。请先恢复，再新增记账。
+              <button disabled={busy} onClick={() => void retry()}>
+                查询并重试
+              </button>
             </div>
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("nativeCurrency")}</label>
-              <div style={{ display: "flex", gap: 8 }}>
-                {(["CAD", "CNY"] as Currency[]).map((c) => (
-                  <button key={c} type="button" onClick={() => setNewCardCurrency(c)} style={{ flex: 1, borderRadius: 10, border: `1px solid ${subtleBorder}`, background: newCardCurrency === c ? "linear-gradient(135deg, #3b82f6, #22c55e)" : "transparent", color: "inherit", padding: "8px 10px", cursor: "pointer", fontWeight: 600 }}>{c}</button>
+          )}
+          {!data ? (
+            <section className="panel">
+              <h2>{loading ? "正在加载你的账户…" : "暂时无法读取账户"}</h2>
+              <p>未同步的数据不会显示为零，也不会被视为成功记账。</p>
+            </section>
+          ) : !data.profile ? (
+            <section className="panel onboarding">
+              <div className="eyebrow">第一次设置</div>
+              <h1>从今天开始就好</h1>
+              <p>
+                无需补齐以前的账。填银行当前余额和信用卡当前欠款，然后只记之后的交易。
+              </p>
+              <p className="muted">
+                起始日期：{today} ·
+                America/Toronto。余额与欠款不计入收入或消费。
+              </p>
+              <form onSubmit={setup}>
+                {openings.map((a, i) => (
+                  <fieldset key={i}>
+                    <legend>账户 {i + 1}</legend>
+                    <div className="form-grid">
+                      <label>
+                        名称
+                        <input
+                          required
+                          maxLength={60}
+                          value={a.name}
+                          onChange={(e) =>
+                            updateOpening(i, { name: e.target.value })
+                          }
+                        />
+                      </label>
+                      <label>
+                        类型
+                        <select
+                          value={a.kind}
+                          onChange={(e) =>
+                            updateOpening(i, {
+                              kind: e.target.value as Opening["kind"],
+                            })
+                          }
+                        >
+                          <option value="asset">银行 / 现金资产</option>
+                          <option value="liability">信用卡欠款</option>
+                        </select>
+                      </label>
+                      <label>
+                        原生币种
+                        <select
+                          value={a.currency}
+                          onChange={(e) =>
+                            updateOpening(i, {
+                              currency: e.target.value as Currency,
+                            })
+                          }
+                        >
+                          <option>CAD</option>
+                          <option>CNY</option>
+                        </select>
+                      </label>
+                      <label>
+                        {a.kind === "asset" ? "当前余额" : "当前总欠款"}
+                        <input
+                          required
+                          inputMode="decimal"
+                          value={a.balance}
+                          onChange={(e) =>
+                            updateOpening(i, { balance: e.target.value })
+                          }
+                        />
+                      </label>
+                      {a.kind === "asset" ? (
+                        <label>
+                          预留学费 / 生活费 / 储蓄（不含还款）
+                          <input
+                            inputMode="decimal"
+                            value={a.reserved}
+                            onChange={(e) =>
+                              updateOpening(i, { reserved: e.target.value })
+                            }
+                          />
+                        </label>
+                      ) : (
+                        <>
+                          <label>
+                            本期账单金额（可稍后补）
+                            <input
+                              inputMode="decimal"
+                              required={!!a.due}
+                              value={a.statement}
+                              onChange={(e) =>
+                                updateOpening(i, { statement: e.target.value })
+                              }
+                            />
+                          </label>
+                          <label>
+                            本期剩余应还
+                            <input
+                              inputMode="decimal"
+                              required={!!a.due}
+                              value={a.remaining}
+                              onChange={(e) =>
+                                updateOpening(i, { remaining: e.target.value })
+                              }
+                            />
+                          </label>
+                          <label>
+                            本期实际到期日期
+                            <input
+                              type="date"
+                              required={!!a.statement || !!a.remaining}
+                              value={a.due}
+                              onChange={(e) =>
+                                updateOpening(i, { due: e.target.value })
+                              }
+                            />
+                          </label>
+                        </>
+                      )}
+                    </div>
+                    {openings.length > 1 && (
+                      <button
+                        type="button"
+                        className="quiet"
+                        onClick={() =>
+                          setOpenings((list) => list.filter((_, n) => n !== i))
+                        }
+                      >
+                        移除此账户
+                      </button>
+                    )}
+                  </fieldset>
+                ))}
+                <div className="actions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenings((list) => [...list, emptyOpening()])
+                    }
+                  >
+                    <Plus size={16} /> 添加账户
+                  </button>
+                  <button className="primary" disabled={busy || !!pending}>
+                    {busy ? "正在保存…" : "从今天开始"}
+                  </button>
+                </div>
+              </form>
+            </section>
+          ) : (
+            <>
+              <section className="hero">
+                <div className="eyebrow">未来 30 天 · 含逾期还款</div>
+                <h1>接下来可以花多少</h1>
+                <div className="balance-grid">
+                  {(["CAD", "CNY"] as Currency[])
+                    .filter((c) => data.accounts.some((a) => a.currency === c))
+                    .map((c) => {
+                      const a = available(data, c);
+                      return (
+                        <div key={c}>
+                          <span>{c}</span>
+                          <strong>{money(a.spendable, c)}</strong>
+                          <small>
+                            现金 {money(a.cash, c)} − 预留{" "}
+                            {money(a.reserved, c)} − 应还{" "}
+                            {money(a.repayment, c)}
+                          </small>
+                        </div>
+                      );
+                    })}
+                </div>
+                <p>
+                  按原生币种分别计算；未出账消费仍包含在信用卡总欠款中，未列入这份还款计划。
+                </p>
+                <p>
+                  截至 {new Date(data.as_of).toLocaleString("zh-CN")} · {status}
+                </p>
+              </section>
+              {data.accounts.some(
+                (a) =>
+                  a.kind === "liability" &&
+                  !data.statements.some((s) => s.account_id === a.id),
+              ) && (
+                <div className="warning">
+                  部分信用卡账单待补，可支配金额可能偏高。请先填写本期剩余应还与实际到期日期。
+                </div>
+              )}
+              <div className="section-title">
+                <h2>还款清单</h2>
+                <span>还款不重复计消费</span>
+              </div>
+              <section className="panel bills">
+                {data.statements.filter((s) => s.remaining_cents > 0).length ===
+                0 ? (
+                  <p className="muted">
+                    暂无已记录的待还账单；没有账单信息不代表没有欠款。
+                  </p>
+                ) : (
+                  data.statements
+                    .filter((s) => s.remaining_cents > 0)
+                    .map((bill: Statement) => {
+                      const a = data.accounts.find(
+                        (a) => a.id === bill.account_id,
+                      )!;
+                      return (
+                        <div className="bill" key={bill.id}>
+                          <div className="bill-icon">
+                            <CreditCard size={22} />
+                          </div>
+                          <div>
+                            <strong>{a.name}</strong>
+                            <small>
+                              {bill.due_on} · {dueLabel(today, bill.due_on)}
+                            </small>
+                            <small>
+                              账单 {money(bill.statement_cents, a.currency)} ·
+                              总欠款 {money(a.balance_cents, a.currency)}
+                            </small>
+                          </div>
+                          <div className="bill-amount">
+                            <strong>
+                              {money(bill.remaining_cents, a.currency)}
+                            </strong>
+                            <button
+                              className="quiet"
+                              disabled={busy || !!pending}
+                              onClick={() => {
+                                open("statement", a);
+                                setSelectedBill(bill);
+                              }}
+                            >
+                              核对账单
+                            </button>
+                            <button
+                              disabled={busy || !!pending}
+                              onClick={() => {
+                                open("record");
+                                setRecordKind("repayment");
+                                setRecordSource(
+                                  data.accounts.find(
+                                    (account) => account.kind === "asset",
+                                  )?.id ?? "",
+                                );
+                                setRecordTarget(a.id);
+                              }}
+                            >
+                              去还款 <ArrowRight size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </section>
+              <div className="section-title">
+                <h2>我的账户</h2>
+                <button
+                  className="quiet"
+                  disabled={busy || !!pending}
+                  onClick={() => open("account")}
+                >
+                  <Plus size={16} /> 添加
+                </button>
+              </div>
+              <div className="account-grid">
+                {data.accounts.map((a) => (
+                  <section className="panel account" key={a.id}>
+                    <div className="account-top">
+                      <strong>{a.name}</strong>
+                      <span>
+                        {a.kind === "asset" ? "资产" : "信用卡"} · {a.currency}
+                      </span>
+                    </div>
+                    <h3>{money(a.balance_cents, a.currency)}</h3>
+                    <small>
+                      {a.kind === "asset"
+                        ? `预留 ${money(a.reserved_cents, a.currency)}`
+                        : "当前总欠款，与本期应还不同"}
+                    </small>
+                    <div className="actions">
+                      <button
+                        onClick={() => open("reconcile", a)}
+                        disabled={busy || !!pending}
+                      >
+                        对账
+                      </button>
+                      <button
+                        onClick={() =>
+                          open(a.kind === "asset" ? "reserve" : "statement", a)
+                        }
+                        disabled={busy || !!pending}
+                      >
+                        {a.kind === "asset" ? "设置预留" : "添加本期账单"}
+                      </button>
+                    </div>
+                  </section>
                 ))}
               </div>
-            </div>
-            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
-              <button type="button" onClick={() => setIsAddingCard(false)} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{t("cancel")}</button>
-              <button type="button" onClick={createCreditCard} disabled={isCreatingCard} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #22c55e, #4ade80)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: isCreatingCard ? "not-allowed" : "pointer", opacity: isCreatingCard ? 0.7 : 1 }}>{isCreatingCard ? t("creating") : t("create")}</button>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {reconcileAccount != null && (
-        <div role="dialog" aria-modal="true" aria-label={t("accountSettings")} style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(0,0,0,0.5)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)" }} onClick={(e) => e.target === e.currentTarget && closeReconcile()}>
-          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 320, borderRadius: 24, padding: 24, background: cardBg, border: `1px solid ${subtleBorder}`, boxShadow: "0 24px 48px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>{reconcileAccount} · {t("accountSettings")}</div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>
-                {selectedIsLiability ? t("currentDebt") : t("currentBalance")}（{t("nativeCurrencyInline")}：{selectedAccount?.currency ?? "CAD"}）
-              </label>
-              <input type="number" inputMode="decimal" value={reconcileInput} onChange={(e) => setReconcileInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") confirmReconcile(); if (e.key === "Escape") closeReconcile(); }} autoFocus style={{ width: "100%", boxSizing: "border-box", padding: "12px 16px", fontSize: 18, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
-            </div>
-            {selectedIsLiability && (
-              <div style={{ marginBottom: 12 }}>
-                <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("dueDate")}</label>
-                <input type="number" min={1} max={31} inputMode="numeric" placeholder={t("exampleDueDate")} value={reconcileDueDate} onChange={(e) => setReconcileDueDate(e.target.value)} style={{ width: "100%", boxSizing: "border-box", padding: "12px 16px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.6)" : "rgba(248,250,252,0.9)", color: isDark ? "#e5e7eb" : "#020617" }} />
+              <div className="section-title">
+                <h2>本月已记录收支</h2>
               </div>
-            )}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ display: "block", fontSize: 12, opacity: 0.8, marginBottom: 4 }}>{t("displayCurrency")}</label>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 8 }}>
-                <input type="checkbox" checked={reconcileUseFxDisplay} onChange={(e) => setReconcileUseFxDisplay(e.target.checked)} />
-                {t("enableConversion")}
-              </label>
-              <div style={{ display: "flex", gap: 8 }}>
-                {(["CAD", "CNY"] as Currency[]).map((c) => (
-                  <button key={c} type="button" onClick={() => setReconcileDisplayCurrency(c)} disabled={!reconcileUseFxDisplay} style={{ flex: 1, borderRadius: 10, border: `1px solid ${subtleBorder}`, background: reconcileDisplayCurrency === c ? "linear-gradient(135deg, #3b82f6, #22c55e)" : "transparent", color: "inherit", padding: "8px 10px", cursor: reconcileUseFxDisplay ? "pointer" : "not-allowed", fontWeight: 600, opacity: reconcileUseFxDisplay ? 1 : 0.5 }}>{c}</button>
-                ))}
+              <section className="panel">
+                <p className="muted">
+                  开始记录：{data.profile.started_on}；本月覆盖从{" "}
+                  {data.profile.started_on > `${today.slice(0, 7)}-01`
+                    ? data.profile.started_on
+                    : `${today.slice(0, 7)}-01`}{" "}
+                  到 {today}
+                  ，另含已补录的历史。完整性尚未确认，未记录不等于没有消费。
+                </p>
+                {(["CAD", "CNY"] as Currency[]).map((c) => {
+                  const m = data.monthly.find((m) => m.currency === c);
+                  return (
+                    <div className="stat" key={c}>
+                      <span>{c}</span>
+                      <span>收入 {money(m?.income_cents ?? 0, c)}</span>
+                      <span>支出 {money(m?.expense_cents ?? 0, c)}</span>
+                    </div>
+                  );
+                })}
+              </section>
+              <div className="section-title">
+                <h2>最近交易</h2>
+                <span>最近 100 笔</span>
               </div>
-            </div>
-            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
-              <button type="button" onClick={closeReconcile} style={{ padding: "10px 18px", borderRadius: 12, border: `1px solid ${subtleBorder}`, background: "transparent", color: isDark ? "#e5e7eb" : "#020617", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>{t("cancel")}</button>
-              <button type="button" onClick={confirmReconcile} disabled={isReconciling} style={{ padding: "10px 18px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #22c55e, #4ade80)", color: "#f9fafb", fontSize: 14, fontWeight: 600, cursor: isReconciling ? "not-allowed" : "pointer", opacity: isReconciling ? 0.7 : 1 }}>{isReconciling ? t("syncing") : t("confirm")}</button>
-            </div>
-          </motion.div>
+              <section className="panel history">
+                {data.transactions.length === 0 ? (
+                  <p className="muted">从第一笔开始，慢慢建立清楚的账。</p>
+                ) : (
+                  data.transactions.map((tx) => (
+                    <div
+                      className={`transaction ${tx.reversed_at ? "reversed" : ""}`}
+                      key={tx.id}
+                    >
+                      <div>
+                        <strong>
+                          {labels[tx.kind]} ·{" "}
+                          {
+                            data.accounts.find((a) => a.id === tx.source_id)
+                              ?.name
+                          }
+                        </strong>
+                        <small>
+                          {tx.occurred_on} · {tx.note || "无备注"}
+                          {tx.target_id
+                            ? ` → ${data.accounts.find((a) => a.id === tx.target_id)?.name}`
+                            : ""}
+                        </small>
+                        {!tx.source_effect && (
+                          <small>历史补录 · 不再次改变来源账户余额</small>
+                        )}
+                        {tx.reversed_at && <small>已撤销，原记录保留</small>}
+                      </div>
+                      <div>
+                        <strong>
+                          {tx.kind === "adjustment"
+                            ? `${money(tx.before_cents ?? 0, tx.currency)} → ${money(tx.after_cents ?? 0, tx.currency)}`
+                            : money(tx.amount_cents, tx.currency)}
+                        </strong>
+                        {tx.target_currency && (
+                          <small>
+                            到账{" "}
+                            {money(tx.target_cents ?? 0, tx.target_currency)}
+                          </small>
+                        )}
+                        {tx.kind !== "adjustment" && !tx.reversed_at && (
+                          <button
+                            className="quiet"
+                            disabled={busy || demo || !!pending}
+                            onClick={() => void reverse(tx.id)}
+                          >
+                            撤销
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </section>
+              <button
+                className="primary add-record"
+                disabled={busy || !!pending}
+                onClick={() => open("record")}
+              >
+                <Plus size={20} /> 记一笔
+              </button>
+            </>
+          )}
+        </main>
+      )}
+      {modal && data && (
+        <div
+          className="overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !busy && !pending)
+              setModal(null);
+          }}
+        >
+          <section
+            className="dialog panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dialog-title"
+          >
+            <h2 id="dialog-title">
+              {modal === "record"
+                ? "记一笔"
+                : modal === "account"
+                  ? "添加账户"
+                  : modal === "statement"
+                    ? `${selected?.name} · ${selectedBill ? "核对账单" : "添加账单"}`
+                    : modal === "reserve"
+                      ? `${selected?.name} · 预留资金`
+                      : `${selected?.name} · 对账`}
+            </h2>
+            <form onSubmit={submitModal}>
+              {modal === "record" && (
+                <>
+                  <div className="tabs">
+                    {[
+                      "expense",
+                      "income",
+                      "refund",
+                      "transfer",
+                      "repayment",
+                    ].map((kind) => (
+                      <button
+                        type="button"
+                        key={kind}
+                        className={recordKind === kind ? "active" : ""}
+                        onClick={() => changeRecordKind(kind)}
+                        disabled={busy || !!pending}
+                      >
+                        {labels[kind]}
+                      </button>
+                    ))}
+                  </div>
+                  <label>
+                    {transfer ? "付款账户" : "账户"}
+                    <select
+                      required
+                      value={recordSource}
+                      onChange={(e) => setRecordSource(e.target.value)}
+                    >
+                      {data.accounts
+                        .filter((a) => !transfer || a.kind === "asset")
+                        .map((a) => (
+                          <option value={a.id} key={a.id}>
+                            {a.name} ({a.currency})
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  {transfer && (
+                    <label>
+                      目标账户
+                      <select
+                        required
+                        value={recordTarget}
+                        onChange={(e) => setRecordTarget(e.target.value)}
+                      >
+                        <option value="">请选择</option>
+                        {data.accounts
+                          .filter(
+                            (a) =>
+                              a.id !== recordSource &&
+                              (recordKind === "repayment"
+                                ? a.kind === "liability"
+                                : a.kind === "asset"),
+                          )
+                          .map((a) => (
+                            <option value={a.id} key={a.id}>
+                              {a.name} ({a.currency})
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  )}
+                  <label>
+                    金额 · {source?.currency}
+                    <input
+                      name="amount"
+                      inputMode="decimal"
+                      required
+                      autoFocus
+                    />
+                  </label>
+                  {transfer &&
+                    target &&
+                    source?.currency !== target.currency && (
+                      <label>
+                        实际到账 / 减少欠款金额 · {target.currency}
+                        <input
+                          name="targetAmount"
+                          inputMode="decimal"
+                          required
+                        />
+                      </label>
+                    )}
+                  <label>
+                    交易日期
+                    <input
+                      name="date"
+                      type="date"
+                      defaultValue={today}
+                      max={today}
+                      required
+                    />
+                  </label>
+                  <label>
+                    备注
+                    <input name="note" maxLength={500} />
+                  </label>
+                  <label className="checkbox">
+                    <input type="checkbox" name="historyOnly" />{" "}
+                    只补历史，不改变当前余额
+                  </label>
+                  <p className="muted">
+                    日期早于账户最新起始 /
+                    对账日时自动只补历史。同一天的旧交易请勾选上项，避免重复扣款。还款按最早到期的未还账单分配，超额部分保留为未分配还款。
+                  </p>
+                </>
+              )}
+              {modal === "account" && (
+                <>
+                  <label>
+                    账户名称
+                    <input name="name" required maxLength={60} />
+                  </label>
+                  <label>
+                    类型
+                    <select name="kind">
+                      <option value="asset">资产</option>
+                      <option value="liability">信用卡</option>
+                    </select>
+                  </label>
+                  <label>
+                    币种
+                    <select name="currency">
+                      <option>CAD</option>
+                      <option>CNY</option>
+                    </select>
+                  </label>
+                  <label>
+                    当前余额 / 总欠款
+                    <input
+                      name="balance"
+                      inputMode="decimal"
+                      defaultValue="0"
+                      required
+                    />
+                  </label>
+                  <p className="muted">作为今天的起始余额，不计收入或消费。</p>
+                </>
+              )}
+              {modal === "reconcile" && selected && (
+                <>
+                  <p>
+                    系统数：{money(selected.balance_cents, selected.currency)}
+                    。按今天银行显示的实际数对账，差额有记录，不自动计收支。
+                  </p>
+                  <label>
+                    实际余额 / 当前总欠款 · {selected.currency}
+                    <input
+                      name="balance"
+                      inputMode="decimal"
+                      defaultValue={String(selected.balance_cents / 100)}
+                      required
+                    />
+                  </label>
+                  <label>
+                    差额说明
+                    <input
+                      name="note"
+                      maxLength={500}
+                      placeholder="例如：漏记几天，按银行余额继续"
+                    />
+                  </label>
+                  <p className="muted">
+                    信用卡总欠款对账不会自动改变本期应还。若同时有人记账，版本冲突会要求重新核对。
+                  </p>
+                </>
+              )}
+              {modal === "reserve" && selected && (
+                <>
+                  <p>
+                    预留给学费、生活费或储蓄；信用卡还款由还款清单另扣，不要在这里重复预留。
+                  </p>
+                  <label>
+                    预留总金额 · {selected.currency}
+                    <input
+                      name="reserved"
+                      inputMode="decimal"
+                      defaultValue={String(selected.reserved_cents / 100)}
+                      required
+                    />
+                  </label>
+                </>
+              )}
+              {modal === "statement" && selected && (
+                <>
+                  <label>
+                    本期原始账单金额 · {selected.currency}
+                    <input
+                      name="statement"
+                      inputMode="decimal"
+                      defaultValue={
+                        selectedBill
+                          ? String(selectedBill.statement_cents / 100)
+                          : ""
+                      }
+                      required
+                    />
+                  </label>
+                  <label>
+                    截至现在剩余应还 · {selected.currency}
+                    <input
+                      name="remaining"
+                      inputMode="decimal"
+                      defaultValue={
+                        selectedBill
+                          ? String(selectedBill.remaining_cents / 100)
+                          : ""
+                      }
+                      required
+                    />
+                  </label>
+                  <label>
+                    银行给出的实际到期日期
+                    <input
+                      name="due"
+                      type="date"
+                      defaultValue={selectedBill?.due_on ?? ""}
+                      required
+                    />
+                  </label>
+                  <p className="muted">
+                    {selectedBill
+                      ? "按银行实际结果更正本期账单，有审计记录，不改变总欠款。"
+                      : "新增一期账单；请勿重复添加同一期。已支付部分直接反映在剩余应还中。"}
+                  </p>
+                </>
+              )}
+              {notice && (
+                <div className="warning" role="status">
+                  {notice}
+                </div>
+              )}
+              <div className="actions">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setModal(null)}
+                >
+                  关闭
+                </button>
+                <button className="primary" disabled={busy || !!pending}>
+                  {busy ? (
+                    "正在保存…"
+                  ) : (
+                    <>
+                      <CheckCircle2 size={16} /> 确认保存
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </section>
         </div>
       )}
-
-      {isRoastOpen && (
-        <div role="dialog" aria-modal="true" aria-label={t("roastTitle")} style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(2,6,23,0.5)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)" }} onClick={(e) => e.target === e.currentTarget && setIsRoastOpen(false)}>
-          <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 360, borderRadius: 24, padding: 22, background: isDark ? "rgba(15,23,42,0.8)" : "rgba(255,255,255,0.8)", border: `1px solid ${subtleBorder}`, boxShadow: "0 24px 48px rgba(0,0,0,0.25)" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700 }}><Sparkles size={18} /> {t("roastTitle")}</div>
-              <button type="button" onClick={() => setIsRoastOpen(false)} style={{ border: "none", background: "transparent", color: isDark ? "#e5e7eb" : "#0f172a", cursor: "pointer" }}>{t("close")}</button>
-            </div>
-            <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 10 }}>{t("weeklyExpensePrefix")} {roastData?.expenseCount ?? 0} {t("weeklyExpenseSuffix")} ¥{(roastData?.weeklyTotal ?? 0).toLocaleString(language === "zh" ? "zh-CN" : "en-CA")}</div>
-            <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.65, fontSize: 15 }}>
-              {isAnalyzing ? t("analyzingRoast") : roastData?.roast ?? t("noAnalysis")}
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      <div style={{ position: "fixed", left: "max(16px, env(safe-area-inset-left))", right: "max(16px, env(safe-area-inset-right))", bottom: 0, paddingBottom: "max(12px, env(safe-area-inset-bottom))", maxWidth: "28rem", marginLeft: "auto", marginRight: "auto", zIndex: 40 }}>
-        <motion.button whileTap={{ scale: 0.97 }} onClick={handleAnalyze} disabled={isAnalyzing} style={{ width: "100%", marginBottom: 10, borderRadius: 16, border: `1px solid ${isDark ? "rgba(96,165,250,0.45)" : "rgba(147,197,253,0.85)"}`, backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", background: isDark ? "rgba(30,41,59,0.76)" : "rgba(241,245,249,0.8)", color: isDark ? "#e2e8f0" : "#0f172a", padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 14, fontWeight: 700, cursor: isAnalyzing ? "not-allowed" : "pointer" }}>
-          <Sparkles size={16} />
-          {isAnalyzing ? t("roastingButton") : t("roastButton")}
-        </motion.button>
-
-        <motion.div initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: 0.35 }} style={{ padding: "8px 10px", borderRadius: 999, backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", backgroundColor: isDark ? "rgba(15,23,42,0.88)" : "rgba(255,255,255,0.9)", border: `1px solid ${isDark ? "rgba(30,64,175,0.7)" : "rgba(191,219,254,0.9)"}`, boxShadow: "0 18px 45px rgba(15,23,42,0.35)", display: "flex", alignItems: "center", gap: 8 }}>
-          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSend(); } }} placeholder={t("recordPlaceholder")} style={{ flex: 1, border: "none", outline: "none", background: "transparent", fontSize: 14, color: isDark ? "#e5e7eb" : "#020617" }} />
-          <motion.button whileTap={{ scale: 0.9 }} onClick={handleSend} disabled={!input.trim() || isSending} style={{ borderRadius: 999, padding: "8px 14px", border: "none", display: "flex", alignItems: "center", gap: 6, cursor: !input.trim() || isSending ? "not-allowed" : "pointer", opacity: !input.trim() || isSending ? 0.6 : 1, background: "linear-gradient(135deg, #22c55e, #22c55e, #4ade80)", color: "#f9fafb", fontSize: 13, fontWeight: 600, boxShadow: "0 10px 30px rgba(22,163,74,0.65)" }}>
-            <Send size={16} />
-            <span>{isSending ? t("recording") : t("record")}</span>
-          </motion.button>
-        </motion.div>
-        {error && <div style={{ marginTop: 6, fontSize: 12, color: "#f97316", textAlign: "center" }}>{error}</div>}
-      </div>
-
-      {userId == null && (
-        <div role="dialog" aria-modal="true" aria-label={t("enterPrivate")} style={{ position: "fixed", inset: 0, zIndex: 99, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "rgba(2,6,23,0.52)", backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)" }}>
-          <motion.div initial={{ scale: 0.96, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} style={{ width: "100%", maxWidth: 360, borderRadius: 24, padding: 24, background: cardBg, border: `1px solid ${subtleBorder}`, boxShadow: "0 28px 64px rgba(0,0,0,0.35)" }}>
-            <div style={{ marginBottom: 14, fontSize: 18, fontWeight: 700 }}>{t("appName")}</div>
-            <input type="password" inputMode="numeric" value={authInput} onChange={(e) => { setAuthInput(e.target.value); if (authError) setAuthError(null); }} onKeyDown={(e) => { if (e.key === "Enter") enterPrivateSpace(); }} placeholder={t("passcodePlaceholder")} style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 16, borderRadius: 12, border: `1px solid ${subtleBorder}`, background: isDark ? "rgba(15,23,42,0.65)" : "rgba(248,250,252,0.92)", color: isDark ? "#e5e7eb" : "#020617", marginBottom: 12 }} />
-            <button type="button" onClick={enterPrivateSpace} style={{ width: "100%", borderRadius: 12, border: "none", padding: "11px 14px", fontSize: 14, fontWeight: 700, color: "#f8fafc", background: "linear-gradient(135deg, #3b82f6, #22c55e)", cursor: "pointer", marginBottom: 10 }}>{t("enterPrivate")}</button>
-            <button type="button" onClick={enterGuestMode} style={{ width: "100%", borderRadius: 12, border: `1px solid ${subtleBorder}`, padding: "10px 14px", fontSize: 14, fontWeight: 600, background: "transparent", color: "inherit", cursor: "pointer" }}>{t("guestMode")}</button>
-            {authError && <div style={{ marginTop: 10, fontSize: 12, color: "#f97316", textAlign: "center" }}>{authError}</div>}
-          </motion.div>
-        </div>
-      )}
+      <footer>
+        金额分别以 CAD / CNY 原币种保存 · 余额与统计以已确认记录为准
+      </footer>
     </div>
   );
-};
-
+}
 export default App;

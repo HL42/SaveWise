@@ -1,0 +1,20 @@
+{
+  "name": "savewise-workspace",
+  "private": true,
+  "scripts": {
+    "supabase": "supabase",
+    "test": "node --test tests/*.test.mjs",
+    "build": "npm --prefix client run build && npm --prefix server run build",
+    "check": "npm test && npm --prefix client run lint && npm run build",
+    "db:verify": "node scripts/verify-database.mjs",
+    "auth:diff": "supabase config diff --workdir deploy --project-ref edgcercowznfxekrmlbt --agent no",
+    "auth:push": "supabase config push --workdir deploy --project-ref edgcercowznfxekrmlbt --agent no"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.9",
+    "supabase": "^2.120.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
