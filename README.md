@@ -67,7 +67,7 @@ npm run auth:diff
 npm run check
 ```
 
-运行 19 项本地数据库/金额/日期/公开配置测试、前端 lint 和前后端构建。GitHub Actions 对 push 和 PR 执行同样检查；CI 不访问云端财务数据，也不执行云端迁移。
+运行 26 项本地数据库/金额/日期/公开配置/双语与演示目标测试、前端 lint 和前后端构建。GitHub Actions 对 push 和 PR 执行同样检查；CI 不访问云端财务数据，也不执行云端迁移。
 
 前端托管项目根目录为 `client`，构建命令 `npm run build`，输出 `dist`，Node.js 版本为 24。生产构建缺失或错误配置会直接失败，避免发布无法登录的页面。配置 `VITE_SUPABASE_URL`、`VITE_SUPABASE_PUBLISHABLE_KEY` 后重新构建。Git push 是否自动发布取决于托管平台的 Git 集成，不等于已验证线上版本。
 
