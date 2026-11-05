@@ -87,3 +87,27 @@ test("goals reject unavailable funds, non-asset accounts and invalid progress wi
     assert.throws(() => updateGoalReserve(data.accounts, goal, next));
   assert.deepEqual(data.accounts, before);
 });
+
+test("monthly allocation reduces spendable once; confirmation and retries only reclassify it", async () => {
+  const { confirmPreviewMonth } = await import(url(helperSource));
+  const data = layoutPreviewDashboard();
+  const monthly = { ...goal, monthly: 20000 };
+  const accounts = updateGoalReserve(data.accounts, goal, monthly);
+  assert.equal(available({ ...data, accounts }, "CAD").spendable, 110000);
+  const confirmed = confirmPreviewMonth(monthly);
+  assert.equal(confirmed.allocated, 80000);
+  assert.equal(confirmed.monthly, 0);
+  assert.deepEqual(updateGoalReserve(accounts, monthly, confirmed), accounts);
+  assert.deepEqual(confirmPreviewMonth(confirmed), confirmed);
+  const withdrawn = { ...monthly, monthly: 15000 };
+  const afterWithdrawal = updateGoalReserve(accounts, monthly, withdrawn);
+  assert.equal(
+    available({ ...data, accounts: afterWithdrawal }, "CAD").spendable,
+    115000,
+  );
+  assert.equal(confirmPreviewMonth(withdrawn).allocated, 75000);
+  for (const value of [-1, 0.1, NaN, 300000])
+    assert.throws(() =>
+      updateGoalReserve(accounts, monthly, { ...monthly, monthly: value }),
+    );
+});

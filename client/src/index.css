@@ -876,70 +876,99 @@ footer {
   border-radius: 999px;
   padding: 7px 10px;
 }
+/* The whole card opens one task; the overview stays quiet. */
 .savings-goal {
   background: #f9fbf5;
-  margin-top: 18px;
-  margin-bottom: 24px;
+  margin: 16px 0 22px;
+  padding: 0;
+  overflow: hidden;
+}
+.goal-card {
+  display: block;
+  width: 100%;
+  padding: 18px;
+  border: 0;
+  border-radius: 20px;
+  background: transparent;
+  text-align: start;
+  color: var(--green);
+  font-weight: 400;
+}
+.goal-card:focus-visible {
+  outline-offset: -4px;
 }
 .goal-heading {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 10px;
-  margin: -4px 0 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  color: #607b53;
+  font-size: 12px;
 }
 .goal-heading > span {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
-  color: #658054;
+}
+.goal-name {
+  display: block;
+  font-size: 17px;
   font-weight: 600;
-}
-.goal-heading button {
-  font-size: 11px;
-}
-.savings-goal h2 {
-  font-size: 18px;
 }
 .goal-amount {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 5px 14px;
-  margin: 12px 0 14px;
+  gap: 5px 10px;
+  margin: 9px 0 12px;
+  font-size: 12px;
 }
 .goal-amount strong {
-  font-size: 29px;
-  font-weight: 500;
+  font-size: 26px;
   letter-spacing: -0.035em;
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
 }
-.goal-amount > span {
-  font-size: 11px;
-  color: #7a8972;
+.goal-target {
+  color: var(--muted);
+  font-size: 12px;
 }
 .goal-progress {
-  height: 6px;
-  border-radius: 99px;
+  display: block;
+  height: 5px;
   background: #e4ebdd;
+  border-radius: 99px;
   overflow: hidden;
 }
 .goal-progress > span {
   display: block;
   height: 100%;
-  background: #8ca572;
+  background: #88a271;
   border-radius: inherit;
 }
+.goal-monthly {
+  display: block;
+  margin-top: 13px;
+  font-size: 12px;
+  font-weight: 500;
+}
 .goal-caption {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.goal-preview-label {
+  display: block;
+  margin: 0 18px 12px;
   font-size: 10px;
-  color: #74866a;
-  margin-top: 10px;
+  color: var(--muted);
+}
+.month-confirm {
+  width: 100%;
+  font-size: 12px;
+  grid-column: 1 / -1;
 }
 .upcoming-overview .section-title {
   margin-top: 16px;
@@ -1059,27 +1088,20 @@ footer {
   gap: 6px;
   flex-shrink: 0;
 }
+/* Compact visual affordance with a 44px touch target. */
 .language-switch {
-  display: flex;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: #eaf0e5;
-}
-.language-switch button {
   min-width: 44px;
   min-height: 44px;
-  padding: 7px 9px;
+  gap: 5px;
+  padding: 8px;
   border: 0;
   border-radius: 999px;
   background: transparent;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
 }
-.language-switch button[aria-pressed="true"] {
-  background: #fff;
-  color: var(--green);
-  box-shadow: 0 1px 5px #203c2b12;
+.language-switch:hover {
+  background: #eaf0e5;
 }
 .brand > div {
   min-width: 0;

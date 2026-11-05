@@ -7,12 +7,14 @@ export type PreviewGoal = {
   accountId: string;
   target: number;
   allocated: number;
+  monthly: number;
 };
 export const initialPreviewGoal: PreviewGoal = {
   name: "备用金",
   accountId: "demo-bank",
   target: 300000,
   allocated: 60000,
+  monthly: 0,
 };
 export function updateGoalReserve(
   accounts: Account[],
@@ -30,7 +32,9 @@ export function updateGoalReserve(
   if (
     !Number.isSafeInteger(next.allocated) ||
     next.allocated < 0 ||
-    next.allocated > next.target
+    !Number.isSafeInteger(next.monthly) ||
+    next.monthly < 0 ||
+    next.allocated + next.monthly > next.target
   )
     throw new Error("已留好的钱不能小于零，也不能超过目标");
   if (!accounts.some((a) => a.id === next.accountId && a.kind === "asset"))
@@ -42,14 +46,21 @@ export function updateGoalReserve(
     throw new Error("原来的存钱账户不存在，请重新设置");
   return accounts.map((account) => {
     const released =
-      previous?.accountId === account.id ? previous.allocated : 0;
-    const added = next.accountId === account.id ? next.allocated : 0;
+      previous?.accountId === account.id
+        ? previous.allocated + previous.monthly
+        : 0;
+    const added =
+      next.accountId === account.id ? next.allocated + next.monthly : 0;
     if (!released && !added) return account;
     const reserved = account.reserved_cents - released + added;
     if (reserved < 0 || reserved > Math.max(account.balance_cents, 0))
       throw new Error("这个账户的钱不够，请调低已留好的金额");
     return { ...account, reserved_cents: reserved };
   });
+}
+// Confirmation reclassifies reserved money; it must not reserve or create money again.
+export function confirmPreviewMonth(goal: PreviewGoal): PreviewGoal {
+  return { ...goal, allocated: goal.allocated + goal.monthly, monthly: 0 };
 }
 export function layoutPreviewDashboard(): Dashboard {
   const data = demoDashboard();

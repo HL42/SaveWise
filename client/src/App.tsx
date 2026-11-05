@@ -14,6 +14,7 @@ import {
   X,
   ChevronRight,
   Leaf,
+  Languages,
 } from "lucide-react";
 import { publicConfig, supabase, localPreview } from "./supabase";
 import {
@@ -29,6 +30,7 @@ import type { Account, Currency, Dashboard, Statement } from "./finance";
 
 import {
   initialPreviewGoal,
+  confirmPreviewMonth,
   layoutPreviewDashboard,
   updateGoalReserve,
 } from "./savingsPreview";
@@ -564,18 +566,28 @@ function App() {
     const value = (key: string) => String(form.get(key) ?? "");
     try {
       if (modal === "goal" && localPreview) {
-        const next = {
+        let next = {
           name: value("goalName").trim(),
           accountId: value("goalAccount"),
           target: cents(value("goalTarget")),
           allocated: cents(value("goalAllocated")),
+          monthly: cents(value("goalMonthly")),
         };
+        // Validate the edited allocation before the explicit preview confirmation.
+        updateGoalReserve(data.accounts, goal, next);
+        const confirmMonth =
+          (event.nativeEvent as SubmitEvent).submitter?.getAttribute(
+            "data-action",
+          ) === "confirm-month";
+        if (confirmMonth) next = confirmPreviewMonth(next);
         const accounts = updateGoalReserve(data.accounts, goal, next);
         setSnapshot({ owner: "demo", data: { ...data, accounts } });
         setGoal(next);
         setModal(null);
         setNotice(
-          "目标已在本页更新。这笔钱已计入预留，不会再扣一次。刷新后恢复演示数据。",
+          confirmMonth
+            ? "目标已确认本月留存。累计增加，可花金额不会再扣一次。仅本地演示，刷新重置。"
+            : "目标已在本页更新。这笔钱已计入预留，不会再扣一次。刷新后恢复演示数据。",
         );
         return;
       }
@@ -701,27 +713,22 @@ function App() {
           </div>
         </div>
         <div className="header-actions">
-          <div
+          <button
+            type="button"
             className="language-switch"
-            role="group"
-            aria-label={t("界面语言")}
+            aria-label={t(language === "zh" ? "切换到英文" : "切换到中文")}
+            title={t(language === "zh" ? "切换到英文" : "切换到中文")}
+            onClick={() => {
+              const next = language === "zh" ? "en" : "zh";
+              saveLanguage(next);
+              setLanguage(next);
+            }}
           >
-            {(["zh", "en"] as const).map((next) => (
-              <button
-                type="button"
-                key={next}
-                lang={next === "zh" ? "zh-CN" : "en"}
-                aria-label={next === "zh" ? "中文" : "English"}
-                aria-pressed={language === next}
-                onClick={() => {
-                  saveLanguage(next);
-                  setLanguage(next);
-                }}
-              >
-                {next === "zh" ? "中文" : "EN"}
-              </button>
-            ))}
-          </div>
+            <Languages size={16} aria-hidden="true" />
+            <span lang={language === "zh" ? "en" : "zh-CN"}>
+              {language === "zh" ? "EN" : "中"}
+            </span>
+          </button>
           {owner && !localPreview && (
             <button
               className="quiet logout"
@@ -1127,65 +1134,72 @@ function App() {
                   className="panel savings-goal"
                   hidden={page !== "overview"}
                 >
-                  <div className="goal-heading">
-                    <span>
-                      <Leaf size={19} />
-                      {t("储蓄目标")}
+                  <button className="goal-card" onClick={() => open("goal")}>
+                    <span className="goal-heading">
+                      <span>
+                        <Leaf size={17} />
+                        {t("储蓄目标")}
+                      </span>
+                      <ChevronRight size={17} />
                     </span>
-                    <button className="quiet" onClick={() => open("goal")}>
-                      {goal ? t("调整目标") : t("设置目标")}
-                      <ChevronRight size={15} />
-                    </button>
-                  </div>
-                  {goal ? (
-                    <>
-                      <h2>{goal.name}</h2>
-                      <div className="goal-amount">
-                        <strong>
-                          {money(
-                            goal.allocated,
-                            data.accounts.find((a) => a.id === goal.accountId)
-                              ?.currency ?? "CAD",
-                          )}
-                        </strong>
-                        <span>
-                          {t("目标")}{" "}
-                          {money(
-                            goal.target,
-                            data.accounts.find((a) => a.id === goal.accountId)
-                              ?.currency ?? "CAD",
-                          )}
-                        </span>
-                      </div>
-                      <div
-                        className="goal-progress"
-                        role="progressbar"
-                        aria-label={t("储蓄目标进度")}
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={Math.round(
+                    {goal ? (
+                      (() => {
+                        const currency =
+                          data.accounts.find((a) => a.id === goal.accountId)
+                            ?.currency ?? "CAD";
+                        const progress = Math.round(
                           (goal.allocated / goal.target) * 100,
-                        )}
-                      >
-                        <span
-                          style={{
-                            width: `${(goal.allocated / goal.target) * 100}%`,
-                          }}
-                        />
-                      </div>
-                      <div className="goal-caption">
-                        <span>
-                          {Math.round((goal.allocated / goal.target) * 100)}
-                          {t("% 已留好")}
-                        </span>
-                        <span>{t("已算在上方留好的钱里")}</span>
-                      </div>
-                    </>
-                  ) : (
-                    <p className="muted">
-                      {t("想存多少钱？先设目标，再慢慢为它留钱。")}
-                    </p>
-                  )}
+                        );
+                        return (
+                          <>
+                            <strong className="goal-name">{goal.name}</strong>
+                            <span className="goal-amount">
+                              <span>
+                                <strong>
+                                  {money(goal.allocated, currency)}
+                                </strong>
+                                <span className="goal-target">
+                                  {" "}
+                                  / {money(goal.target, currency)}
+                                </span>
+                              </span>
+                              <span>{progress}%</span>
+                            </span>
+                            <span
+                              className="goal-progress"
+                              role="progressbar"
+                              aria-label={t("储蓄目标进度")}
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={progress}
+                            >
+                              <span style={{ width: `${progress}%` }} />
+                            </span>
+                            <span className="goal-monthly">
+                              {goal.monthly > 0
+                                ? t("本月留了 {0} · 月底待确认", {
+                                    0: money(goal.monthly, currency),
+                                  })
+                                : t("本月还没留钱 · 点这里安排")}
+                            </span>
+                            <span className="goal-caption">
+                              {t("还差 {0} · 本月留存已从可花金额扣除", {
+                                0: money(
+                                  goal.target - goal.allocated,
+                                  currency,
+                                ),
+                              })}
+                            </span>
+                          </>
+                        );
+                      })()
+                    ) : (
+                      <span>{t("想存多少钱？先设目标，再慢慢为它留钱。")}</span>
+                    )}
+                  </button>
+                  <small className="goal-preview-label">
+                    {t("本地设计预览 · 刷新重置")}
+                  </small>
                 </section>
               )}
               <div
@@ -1638,7 +1652,7 @@ function App() {
                     />
                   </label>
                   <label>
-                    {t("现在已经留好多少")}
+                    {t("之前已经攒下多少")}
                     <input
                       name="goalAllocated"
                       inputMode="decimal"
@@ -1646,9 +1660,18 @@ function App() {
                       required
                     />
                   </label>
+                  <label>
+                    {t("本月还留着多少钱")}
+                    <input
+                      name="goalMonthly"
+                      inputMode="decimal"
+                      defaultValue={String((goal?.monthly ?? 0) / 100)}
+                      required
+                    />
+                  </label>
                   <p className="muted">
                     {t(
-                      "只算你专门留给这个目标的钱。它会放进账户预留里，不算消费，也不会重复扣掉。",
+                      "之前攒下的和本月留的钱都会从可花金额中留出。若动用了本月留存，把这里改成还剩的金额。月底确认只更新累计，不会再扣钱。",
                     )}
                   </p>
                 </>
@@ -1971,6 +1994,15 @@ function App() {
                     </>
                   )}
                 </button>
+                {modal === "goal" && localPreview && (
+                  <button
+                    type="submit"
+                    className="month-confirm"
+                    data-action="confirm-month"
+                  >
+                    {t("试试月底确认（本地演示）")}
+                  </button>
+                )}
               </div>
             </form>
           </section>

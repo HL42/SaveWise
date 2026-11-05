@@ -3,6 +3,21 @@ export const LANGUAGE_STORAGE_KEY = "savewise_lang";
 
 // Source-language keys keep UI copy readable. User content is never translated.
 export const english: Readonly<Record<string, string>> = {
+  切换到英文: "Switch to English",
+  切换到中文: "切换到中文 / Switch to Chinese",
+  "本月留了 {0} · 月底待确认":
+    "{0} set aside this month · Confirm at month-end",
+  "本月还没留钱 · 点这里安排": "Nothing set aside this month · Tap to plan",
+  "还差 {0} · 本月留存已从可花金额扣除":
+    "{0} to go · This month’s allocation is already reserved",
+  "本地设计预览 · 刷新重置": "Local design preview · Resets on refresh",
+  之前已经攒下多少: "Previously saved",
+  本月还留着多少钱: "Amount still set aside this month",
+  "之前攒下的和本月留的钱都会从可花金额中留出。若动用了本月留存，把这里改成还剩的金额。月底确认只更新累计，不会再扣钱。":
+    "Previous savings and this month’s allocation are reserved from spending money. If you use some of this month’s allocation, enter what remains. Month-end confirmation updates the total without deducting it again.",
+  "试试月底确认（本地演示）": "Try month-end confirmation (local preview)",
+  "目标已确认本月留存。累计增加，可花金额不会再扣一次。仅本地演示，刷新重置。":
+    "Month confirmed in this preview. Savings increased; spending money is not deducted again. Refreshing resets the demo.",
   "账户 {0}": "Account {0}",
   "按到期日先后排列 · {0} 笔待还": "By due date · {0} unpaid",
   总览: "Overview",
