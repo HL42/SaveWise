@@ -4,8 +4,11 @@ export const publicConfig = readPublicConfig(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
 );
+// Preview never creates an Auth client or requests real financial data.
+export const localPreview =
+  import.meta.env.DEV && window.location.pathname === "/demo";
 export const supabase =
-  publicConfig.status === "ready"
+  publicConfig.status === "ready" && !localPreview
     ? createClient(publicConfig.url, publicConfig.key, {
         auth: {
           persistSession: true,

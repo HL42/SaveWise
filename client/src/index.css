@@ -448,8 +448,7 @@ header {
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
-.bill-amount strong::before {
-  content: "剩余应还 ";
+.bill-amount .remaining-label {
   font-size: 11px;
   font-weight: 400;
   letter-spacing: 0;
@@ -462,29 +461,6 @@ header {
   margin-left: auto;
   background: #eff5eb;
   border-color: #dce8d5;
-}
-.overview-shortcuts {
-  display: grid;
-  gap: 10px;
-  margin-top: 20px;
-}
-.overview-shortcuts button {
-  justify-content: flex-start;
-  padding: 15px 16px;
-  border-radius: 18px;
-  border-color: var(--line);
-  gap: 12px;
-  text-align: left;
-}
-.overview-shortcuts span {
-  flex: 1;
-  font-size: 14px;
-}
-.overview-shortcuts small {
-  display: block;
-  font-size: 11px;
-  font-weight: 400;
-  margin-top: 3px;
 }
 .account-grid {
   display: grid;
@@ -697,6 +673,8 @@ header {
   border-top: 1px solid var(--line);
 }
 .dialog-actions button {
+  min-width: 0;
+  overflow-wrap: anywhere;
   min-height: 49px;
 }
 .tabs {
@@ -735,11 +713,11 @@ header {
   font-weight: 600;
   letter-spacing: -0.035em;
   line-height: 1.2;
-  padding: 13px 0;
-  border: 0;
-  border-bottom: 1px solid #cbd8cf;
-  border-radius: 0;
-  margin-top: 2px;
+  padding: 19px 24px;
+  border: 1px solid #d8e5d2;
+  border-radius: 999px;
+  background: #f3f7ef;
+  margin-top: 9px;
   font-variant-numeric: tabular-nums;
 }
 .amount-field input::placeholder {
@@ -845,9 +823,6 @@ footer {
   .form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .overview-shortcuts {
-    grid-template-columns: 1fr 1fr;
-  }
   .bill {
     grid-template-columns: 40px minmax(0, 1fr) minmax(0, 0.85fr);
     column-gap: 14px;
@@ -890,5 +865,251 @@ footer {
   *::after {
     animation: none !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Keep the established five-tab layout; reduce visual weight within each task. */
+.preview-badge {
+  font-size: 10px;
+  color: #637d60;
+  border: 1px solid #dce7d5;
+  border-radius: 999px;
+  padding: 7px 10px;
+}
+.savings-goal {
+  background: #f9fbf5;
+  margin-top: 18px;
+  margin-bottom: 24px;
+}
+.goal-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin: -4px 0 10px;
+}
+.goal-heading > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #658054;
+  font-weight: 600;
+}
+.goal-heading button {
+  font-size: 11px;
+}
+.savings-goal h2 {
+  font-size: 18px;
+}
+.goal-amount {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin: 12px 0 14px;
+}
+.goal-amount strong {
+  font-size: 29px;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.goal-amount > span {
+  font-size: 11px;
+  color: #7a8972;
+}
+.goal-progress {
+  height: 6px;
+  border-radius: 99px;
+  background: #e4ebdd;
+  overflow: hidden;
+}
+.goal-progress > span {
+  display: block;
+  height: 100%;
+  background: #8ca572;
+  border-radius: inherit;
+}
+.goal-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  color: #74866a;
+  margin-top: 10px;
+}
+.upcoming-overview .section-title {
+  margin-top: 16px;
+}
+.upcoming-overview .section-title h2 {
+  font-size: 16px;
+}
+.upcoming-overview .bills {
+  padding: 2px 14px;
+}
+.upcoming-overview .bill {
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  padding: 12px 0;
+}
+.upcoming-overview .bill-icon {
+  width: 30px;
+  height: 34px;
+  border-radius: 10px;
+}
+.upcoming-overview .bill-icon svg {
+  width: 18px;
+}
+.bill-overview-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  min-height: 44px;
+  font-size: 13px;
+  text-align: left;
+  justify-content: flex-start;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.upcoming-overview .bill-amount {
+  grid-column: 3;
+  margin: 0;
+  display: block;
+}
+.upcoming-overview .bill-amount strong {
+  font-size: 16px;
+  margin: 0;
+  text-align: right;
+}
+.upcoming-overview .bill-amount .remaining-label {
+  content: none;
+}
+.upcoming-overview .bill small {
+  font-size: 10px;
+  margin-top: 1px;
+}
+.account-section {
+  margin-bottom: 25px;
+}
+.account-group-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 2px 12px;
+}
+.account-group-heading h3 {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.account-group-heading > span {
+  font-size: 11px;
+  color: #74866a;
+}
+.dialog input:not([type="checkbox"]),
+.dialog select {
+  border-radius: 22px;
+}
+.dialog input:not([type="checkbox"]):focus,
+.dialog select:focus {
+  outline: none;
+  border-color: #729c66;
+  box-shadow: 0 0 0 3px #a6bd9750;
+}
+.dialog .amount-field input {
+  border-radius: 999px;
+}
+.record-form .tabs {
+  border-radius: 999px;
+  padding: 5px;
+}
+.record-form .tabs button {
+  border-radius: 999px;
+}
+.dialog-actions button {
+  border-radius: 999px;
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  .bottom-nav,
+  .dialog-actions {
+    background: #fff;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+.notice-success {
+  background: #eef6e9;
+  border-color: #d6e5cc;
+  color: #426237;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.language-switch {
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #eaf0e5;
+}
+.language-switch button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--muted);
+}
+.language-switch button[aria-pressed="true"] {
+  background: #fff;
+  color: var(--green);
+  box-shadow: 0 1px 5px #203c2b12;
+}
+.brand > div {
+  min-width: 0;
+}
+.brand small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:lang(en) .bottom-nav button {
+  font-size: 11px;
+}
+@media (max-width: 430px) {
+  .logout span {
+    display: none;
+  }
+  header {
+    gap: 6px;
+  }
+  .brand {
+    gap: 6px;
+  }
+  .brand-icon {
+    display: none;
+  }
+}
+@media (max-width: 360px) {
+  :lang(en) .record-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-radius: 22px;
   }
 }

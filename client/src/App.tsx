@@ -13,18 +13,34 @@ import {
   ListFilter,
   X,
   ChevronRight,
+  Leaf,
 } from "lucide-react";
-import { publicConfig, supabase } from "./supabase";
+import { publicConfig, supabase, localPreview } from "./supabase";
 import {
   available,
   cents,
   demoDashboard,
-  dueLabel,
+  dueLabel as formatDueLabel,
   dayDistance,
   localDay,
-  money,
+  money as formatMoney,
 } from "./finance";
 import type { Account, Currency, Dashboard, Statement } from "./finance";
+
+import {
+  initialPreviewGoal,
+  layoutPreviewDashboard,
+  updateGoalReserve,
+} from "./savingsPreview";
+import type { PreviewGoal } from "./savingsPreview";
+
+import {
+  readLanguage,
+  saveLanguage,
+  translate,
+  translateMessage,
+} from "./locales";
+import type { Language } from "./locales";
 
 type Pending = { name: string; params: Record<string, unknown>; owner: string };
 type Page = "overview" | "bills" | "accounts" | "history";
@@ -85,27 +101,48 @@ function readLocal<T>(key: string): T | null {
   }
 }
 function App() {
+  const [language, setLanguage] = useState<Language>(readLanguage);
+  const t = (source: string, values?: Record<string, unknown>) =>
+    translate(source, language, values);
+  const money = (value: number, currency: Currency) =>
+    formatMoney(value, currency, language);
+  const dueLabel = (today: string, due: string) =>
+    formatDueLabel(today, due, language);
+  useEffect(() => {
+    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+    document.title =
+      language === "zh"
+        ? "SaveWise · 把钱管清楚"
+        : "SaveWise · Know your money";
+  }, [language]);
   const [session, setSession] = useState<Session | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [demo, setDemo] = useState(false);
+  const [authReady, setAuthReady] = useState(localPreview);
+  const [demo, setDemo] = useState(localPreview);
   const [page, setPage] = useState<Page>("overview");
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [snapshot, setSnapshot] = useState<{
     owner: string;
     data: Dashboard;
-  } | null>(null);
-  const [status, setStatus] = useState("等待登录");
+  } | null>(() =>
+    localPreview ? { owner: "demo", data: layoutPreviewDashboard() } : null,
+  );
+  const [goal, setGoal] = useState<PreviewGoal | null>(() =>
+    localPreview ? { ...initialPreviewGoal } : null,
+  );
+  const [status, setStatus] = useState(
+    localPreview ? "本地演示 · 虚构数据" : "等待登录",
+  );
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const [modal, setModal] = useState<
-    "record" | "account" | "reconcile" | "statement" | "reserve" | null
+    "record" | "account" | "reconcile" | "statement" | "reserve" | "goal" | null
   >(null);
   const [selected, setSelected] = useState<Account | null>(null);
   const [selectedBill, setSelectedBill] = useState<Statement | null>(null);
   const [openings, setOpenings] = useState<Opening[]>([
-    { ...emptyOpening(), name: "日常银行" },
+    { ...emptyOpening(), name: translate("日常银行", readLanguage()) },
   ]);
   const [recordKind, setRecordKind] = useState("expense");
   const [recordSource, setRecordSource] = useState("");
@@ -114,16 +151,21 @@ function App() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
-  const activeOwner = useRef<string | null>(null);
+  const activeOwner = useRef<string | null>(localPreview ? "demo" : null);
   const loadGeneration = useRef(0);
   const submitting = useRef(false);
   const owner = demo ? "demo" : (session?.user.id ?? null);
   const data = snapshot?.owner === owner ? snapshot.data : null;
   const today = data?.today ?? localDay();
+  const noticeSuccess =
+    notice.startsWith("已保存") || notice.startsWith("目标已");
 
   const clearDrafts = useCallback(() => {
     setPage("overview");
-    setOpenings([{ ...emptyOpening(), name: "日常银行" }]);
+    setGoal(null);
+    setOpenings([
+      { ...emptyOpening(), name: translate("日常银行", readLanguage()) },
+    ]);
     setSelected(null);
     setSelectedBill(null);
     setRecordKind("expense");
@@ -517,11 +559,27 @@ function App() {
   }
   async function submitModal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (demo) return;
     if (!owner || !data || pending) return;
     const form = new FormData(event.currentTarget);
     const value = (key: string) => String(form.get(key) ?? "");
     try {
+      if (modal === "goal" && localPreview) {
+        const next = {
+          name: value("goalName").trim(),
+          accountId: value("goalAccount"),
+          target: cents(value("goalTarget")),
+          allocated: cents(value("goalAllocated")),
+        };
+        const accounts = updateGoalReserve(data.accounts, goal, next);
+        setSnapshot({ owner: "demo", data: { ...data, accounts } });
+        setGoal(next);
+        setModal(null);
+        setNotice(
+          "目标已在本页更新。这笔钱已计入预留，不会再扣一次。刷新后恢复演示数据。",
+        );
+        return;
+      }
+      if (demo) return;
       const key = crypto.randomUUID();
       let name = "";
       let params: Record<string, unknown> = {};
@@ -604,7 +662,7 @@ function App() {
     if (!owner || demo || pending) return;
     if (
       !window.confirm(
-        "撤销这笔交易？记录会保留；已对账前的交易不会再次改变当前余额。",
+        t("撤销这笔交易？记录会保留；已对账前的交易不会再次改变当前余额。"),
       )
     )
       return;
@@ -637,30 +695,68 @@ function App() {
             <strong>SaveWise</strong>
             <small>
               {owner && data?.profile
-                ? `${pageLabels[page]} · ${today}`
-                : "把钱管清楚，生活轻一点"}
+                ? `${t(pageLabels[page])} · ${today}`
+                : t("把钱管清楚，生活轻一点")}
             </small>
           </div>
         </div>
-        {owner && (
-          <button className="quiet logout" onClick={() => void logout()}>
-            <LogOut size={16} /> {demo ? "退出演示" : "退出"}
-          </button>
-        )}
+        <div className="header-actions">
+          <div
+            className="language-switch"
+            role="group"
+            aria-label={t("界面语言")}
+          >
+            {(["zh", "en"] as const).map((next) => (
+              <button
+                type="button"
+                key={next}
+                lang={next === "zh" ? "zh-CN" : "en"}
+                aria-label={next === "zh" ? "中文" : "English"}
+                aria-pressed={language === next}
+                onClick={() => {
+                  saveLanguage(next);
+                  setLanguage(next);
+                }}
+              >
+                {next === "zh" ? "中文" : "EN"}
+              </button>
+            ))}
+          </div>
+          {owner && !localPreview && (
+            <button
+              className="quiet logout"
+              aria-label={t(demo ? "退出演示" : "退出")}
+              onClick={() => void logout()}
+            >
+              <LogOut size={16} />
+              <span>{t(demo ? "退出演示" : "退出")}</span>
+            </button>
+          )}
+        </div>
       </header>
       {!owner ? (
         <main className="auth panel">
-          <div className="eyebrow">自己的账，自己看</div>
-          <h1>{authMode === "signup" ? "创建自己的账本" : "欢迎回来"}</h1>
-          <p>用真实登录保护余额。演示数据与个人账户完全隔离。</p>
+          <div className="eyebrow">{t("自己的账，自己看")}</div>
+          <h1>{authMode === "signup" ? t("创建自己的账本") : t("欢迎回来")}</h1>
+          <p>{t("用真实登录保护余额。演示数据与个人账户完全隔离。")}</p>
           {!supabase && (
             <div className="warning">
               {import.meta.env.DEV
-                ? `Supabase 客户端配置${publicConfig.status === "missing" ? "缺失" : "无效"}。请检查 client/.env.local 中的 URL 和公开 Publishable / anon key，并重启开发服务。`
-                : "登录服务尚未配置，请联系应用维护者；无需在自己的设备创建 .env 文件。"}
+                ? t(
+                    "Supabase 客户端配置{0}。请检查 client/.env.local 中的 URL 和公开 Publishable / anon key，并重启开发服务。",
+                    {
+                      0:
+                        publicConfig.status === "missing"
+                          ? t("缺失")
+                          : t("无效"),
+                    },
+                  )
+                : t(
+                    "登录服务尚未配置，请联系应用维护者；无需在自己的设备创建 .env 文件。",
+                  )}
             </div>
           )}
-          <div className="tabs" aria-label="登录或注册">
+          <div className="tabs" aria-label={t("登录或注册")}>
             <button
               type="button"
               className={authMode === "login" ? "active" : ""}
@@ -672,7 +768,7 @@ function App() {
                 setNotice("");
               }}
             >
-              登录
+              {t("登录")}
             </button>
             <button
               type="button"
@@ -685,12 +781,12 @@ function App() {
                 setNotice("");
               }}
             >
-              注册
+              {t("注册")}
             </button>
           </div>
           <form onSubmit={authenticate}>
             <label>
-              邮箱
+              {t("邮箱")}
               <input
                 type="email"
                 autoComplete="username"
@@ -700,7 +796,7 @@ function App() {
               />
             </label>
             <label>
-              密码
+              {t("密码")}
               <input
                 type="password"
                 autoComplete={
@@ -714,7 +810,7 @@ function App() {
             </label>
             {authMode === "signup" && (
               <label>
-                再次输入密码
+                {t("再次输入密码")}
                 <input
                   type="password"
                   autoComplete="new-password"
@@ -730,10 +826,10 @@ function App() {
               disabled={!supabase || busy || !authReady}
             >
               {busy
-                ? "处理中…"
+                ? t("处理中…")
                 : authMode === "signup"
-                  ? "注册并验证邮箱"
-                  : "登录"}
+                  ? t("注册并验证邮箱")
+                  : t("登录")}
             </button>
           </form>
           <div className="actions">
@@ -742,25 +838,30 @@ function App() {
                 onClick={() => void resendConfirmation()}
                 disabled={!supabase || busy}
               >
-                重新发送确认邮件
+                {t("重新发送确认邮件")}
               </button>
             )}
             <button
               onClick={() => void magicLink()}
               disabled={!supabase || busy}
             >
-              邮箱链接登录
+              {t("邮箱链接登录")}
             </button>
             <button onClick={enterDemo} disabled={busy || !authReady}>
-              查看虚构演示
+              {t("查看虚构演示")}
             </button>
           </div>
           <p className="muted">
-            每个人使用独立账号和账本；注册完成并确认邮箱后，从自己的当前余额开始。
+            {t(
+              "每个人使用独立账号和账本；注册完成并确认邮箱后，从自己的当前余额开始。",
+            )}
           </p>
           {notice && (
-            <div role="status" className="warning">
-              {notice}
+            <div
+              role="status"
+              className={`warning${noticeSuccess ? " notice-success" : ""}`}
+            >
+              {translateMessage(notice, language)}
             </div>
           )}
         </main>
@@ -771,17 +872,20 @@ function App() {
               <span
                 className={`sync-status ${status === "已同步" ? "ok" : ""}`}
               >
-                {status}
+                {t(status)}
               </span>
               {data && (
                 <small>
-                  更新于{" "}
-                  {new Date(data.as_of).toLocaleString("zh-CN", {
-                    month: "numeric",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                  {t("更新于")}{" "}
+                  {new Date(data.as_of).toLocaleString(
+                    language === "zh" ? "zh-CN" : "en-CA",
+                    {
+                      month: "numeric",
+                      day: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    },
+                  )}
                 </small>
               )}
             </div>
@@ -792,45 +896,54 @@ function App() {
                 if (owner) void refresh(owner);
               }}
             >
-              <RefreshCw size={14} className={loading ? "spin" : ""} /> 刷新
+              <RefreshCw size={14} className={loading ? "spin" : ""} />
+              {t("刷新")}
             </button>
           </div>
           {notice && (
-            <div className="warning" role="status">
-              {notice}
+            <div
+              className={`warning${noticeSuccess ? " notice-success" : ""}`}
+              role="status"
+            >
+              {translateMessage(notice, language)}
             </div>
           )}
           {pending && (
             <div className="warning">
-              有一笔请求的结果尚未确认。请先恢复，再新增记账。
+              {t("有一笔请求的结果尚未确认。请先恢复，再新增记账。")}
               <button disabled={busy} onClick={() => void retry()}>
-                查询并重试
+                {t("查询并重试")}
               </button>
             </div>
           )}
           {!data ? (
             <section className="panel">
-              <h2>{loading ? "正在加载你的账户…" : "暂时无法读取账户"}</h2>
-              <p>未同步的数据不会显示为零，也不会被视为成功记账。</p>
+              <h2>
+                {loading ? t("正在加载你的账户…") : t("暂时无法读取账户")}
+              </h2>
+              <p>{t("未同步的数据不会显示为零，也不会被视为成功记账。")}</p>
             </section>
           ) : !data.profile ? (
             <section className="panel onboarding">
-              <div className="eyebrow">第一次设置</div>
-              <h1>从今天开始就好</h1>
+              <div className="eyebrow">{t("第一次设置")}</div>
+              <h1>{t("从今天开始就好")}</h1>
               <p>
-                无需补齐以前的账。填银行当前余额和信用卡当前欠款，然后只记之后的交易。
+                {t(
+                  "无需补齐以前的账。填银行当前余额和信用卡当前欠款，然后只记之后的交易。",
+                )}
               </p>
               <p className="muted">
-                起始日期：{today} ·
-                America/Toronto。余额与欠款不计入收入或消费。
+                {t("起始日期：")}
+                {today}
+                {t("· America/Toronto。余额与欠款不计入收入或消费。")}
               </p>
               <form onSubmit={setup}>
                 {openings.map((a, i) => (
                   <fieldset key={i}>
-                    <legend>账户 {i + 1}</legend>
+                    <legend>{t("账户 {0}", { 0: i + 1 })}</legend>
                     <div className="form-grid">
                       <label>
-                        名称
+                        {t("名称")}
                         <input
                           required
                           maxLength={60}
@@ -841,7 +954,7 @@ function App() {
                         />
                       </label>
                       <label>
-                        类型
+                        {t("类型")}
                         <select
                           value={a.kind}
                           onChange={(e) =>
@@ -850,12 +963,14 @@ function App() {
                             })
                           }
                         >
-                          <option value="asset">银行 / 现金资产</option>
-                          <option value="liability">信用卡欠款</option>
+                          <option value="asset">
+                            {t("银行卡 / 储蓄 / 现金")}
+                          </option>
+                          <option value="liability">{t("信用卡欠款")}</option>
                         </select>
                       </label>
                       <label>
-                        原生币种
+                        {t("币种")}
                         <select
                           value={a.currency}
                           onChange={(e) =>
@@ -869,7 +984,7 @@ function App() {
                         </select>
                       </label>
                       <label>
-                        {a.kind === "asset" ? "当前余额" : "当前总欠款"}
+                        {a.kind === "asset" ? t("当前余额") : t("当前总欠款")}
                         <input
                           required
                           inputMode="decimal"
@@ -881,7 +996,7 @@ function App() {
                       </label>
                       {a.kind === "asset" ? (
                         <label>
-                          预留学费 / 生活费 / 储蓄（不含还款）
+                          {t("先留给学费、生活费或储蓄的钱（还款另算）")}
                           <input
                             inputMode="decimal"
                             value={a.reserved}
@@ -893,7 +1008,7 @@ function App() {
                       ) : (
                         <>
                           <label>
-                            本期账单金额（可稍后补）
+                            {t("本期账单金额（可稍后补）")}
                             <input
                               inputMode="decimal"
                               required={!!a.due}
@@ -904,7 +1019,7 @@ function App() {
                             />
                           </label>
                           <label>
-                            本期剩余应还
+                            {t("本期剩余应还")}
                             <input
                               inputMode="decimal"
                               required={!!a.due}
@@ -915,7 +1030,7 @@ function App() {
                             />
                           </label>
                           <label>
-                            本期实际到期日期
+                            {t("本期实际到期日期")}
                             <input
                               type="date"
                               required={!!a.statement || !!a.remaining}
@@ -936,7 +1051,7 @@ function App() {
                           setOpenings((list) => list.filter((_, n) => n !== i))
                         }
                       >
-                        移除此账户
+                        {t("移除此账户")}
                       </button>
                     )}
                   </fieldset>
@@ -948,10 +1063,11 @@ function App() {
                       setOpenings((list) => [...list, emptyOpening()])
                     }
                   >
-                    <Plus size={16} /> 添加账户
+                    <Plus size={16} />
+                    {t("添加账户")}
                   </button>
                   <button className="primary" disabled={busy || !!pending}>
-                    {busy ? "正在保存…" : "从今天开始"}
+                    {busy ? t("正在保存…") : t("从今天开始")}
                   </button>
                 </div>
               </form>
@@ -961,10 +1077,10 @@ function App() {
               <section className="hero" hidden={page !== "overview"}>
                 <div className="hero-heading">
                   <Wallet size={18} />
-                  <span>安心花，心里有数</span>
+                  <span>{t("安心花，心里有数")}</span>
                 </div>
-                <div className="eyebrow">未来 30 天 · 含逾期还款</div>
-                <h1>接下来可以花多少</h1>
+                <div className="eyebrow">{t("未来 30 天 · 含逾期还款")}</div>
+                <h1>{t("接下来可以花多少")}</h1>
                 <div className="balance-grid">
                   {(["CAD", "CNY"] as Currency[])
                     .filter((c) => data.accounts.some((a) => a.currency === c))
@@ -976,15 +1092,15 @@ function App() {
                           <strong>{money(a.spendable, c)}</strong>
                           <dl className="balance-breakdown">
                             <div>
-                              <dt>现金余额</dt>
+                              <dt>{t("银行卡余额")}</dt>
                               <dd>{money(a.cash, c)}</dd>
                             </div>
                             <div>
-                              <dt>已预留</dt>
+                              <dt>{t("留好的钱")}</dt>
                               <dd>{money(a.reserved, c)}</dd>
                             </div>
                             <div>
-                              <dt>30 天应还</dt>
+                              <dt>{t("近期要还")}</dt>
                               <dd>{money(a.repayment, c)}</dd>
                             </div>
                           </dl>
@@ -993,45 +1109,126 @@ function App() {
                     })}
                 </div>
                 <details className="balance-explanation">
-                  <summary>这个金额怎么算？</summary>
+                  <summary>{t("这个金额怎么算？")}</summary>
                   <p>
-                    现金余额减去预留资金，再减去未来 30
-                    天及逾期的账单剩余应还。未记录的账单可能使金额偏高。
+                    {t(
+                      "银行卡里的钱，减去你留好的钱，再减去未来 30 天及已到期还没还的账单。账单没填全时，这个数可能偏高。",
+                    )}
                   </p>
                   <p>
-                    按原生币种分别计算；未出账消费仍包含在信用卡总欠款中，未列入这份还款计划。
+                    {t(
+                      "CAD 和 CNY 分开算。信用卡新消费还没出账时，会计入总欠款，但不会加到这期应还里。",
+                    )}
                   </p>
                 </details>
               </section>
-              <div hidden={page !== "overview" && page !== "bills"}>
+              {localPreview && (
+                <section
+                  className="panel savings-goal"
+                  hidden={page !== "overview"}
+                >
+                  <div className="goal-heading">
+                    <span>
+                      <Leaf size={19} />
+                      {t("储蓄目标")}
+                    </span>
+                    <button className="quiet" onClick={() => open("goal")}>
+                      {goal ? t("调整目标") : t("设置目标")}
+                      <ChevronRight size={15} />
+                    </button>
+                  </div>
+                  {goal ? (
+                    <>
+                      <h2>{goal.name}</h2>
+                      <div className="goal-amount">
+                        <strong>
+                          {money(
+                            goal.allocated,
+                            data.accounts.find((a) => a.id === goal.accountId)
+                              ?.currency ?? "CAD",
+                          )}
+                        </strong>
+                        <span>
+                          {t("目标")}{" "}
+                          {money(
+                            goal.target,
+                            data.accounts.find((a) => a.id === goal.accountId)
+                              ?.currency ?? "CAD",
+                          )}
+                        </span>
+                      </div>
+                      <div
+                        className="goal-progress"
+                        role="progressbar"
+                        aria-label={t("储蓄目标进度")}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round(
+                          (goal.allocated / goal.target) * 100,
+                        )}
+                      >
+                        <span
+                          style={{
+                            width: `${(goal.allocated / goal.target) * 100}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="goal-caption">
+                        <span>
+                          {Math.round((goal.allocated / goal.target) * 100)}
+                          {t("% 已留好")}
+                        </span>
+                        <span>{t("已算在上方留好的钱里")}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="muted">
+                      {t("想存多少钱？先设目标，再慢慢为它留钱。")}
+                    </p>
+                  )}
+                </section>
+              )}
+              <div
+                className={page === "overview" ? "upcoming-overview" : ""}
+                hidden={page !== "overview" && page !== "bills"}
+              >
                 {data.accounts.some(
                   (a) =>
                     a.kind === "liability" &&
                     !data.statements.some((s) => s.account_id === a.id),
                 ) && (
                   <div className="warning">
-                    部分信用卡账单待补，可支配金额可能偏高。请先填写本期剩余应还与实际到期日期。
+                    {t(
+                      "有信用卡还没填本期账单。先补上还剩多少没还、哪天到期，首页金额才更有参考价值。",
+                    )}
                   </div>
                 )}
                 <div className="section-title">
                   <div>
-                    <h2>{page === "overview" ? "接下来要还" : "还款清单"}</h2>
+                    <h2>
+                      {page === "overview" ? t("接下来要还") : t("还款清单")}
+                    </h2>
                     <small>
-                      按实际到期日排列 · {unpaidBills.length} 笔待还
+                      {t("按到期日先后排列 · {0} 笔待还", {
+                        0: unpaidBills.length,
+                      })}
                     </small>
                   </div>
                   {page === "overview" ? (
                     <button className="quiet" onClick={() => navigate("bills")}>
-                      全部 <ChevronRight size={16} />
+                      {t("全部")}
+                      <ChevronRight size={16} />
                     </button>
                   ) : (
-                    <span>还款不重复计消费</span>
+                    <span>{t("还款不再算一笔消费")}</span>
                   )}
                 </div>
                 <section className="panel bills">
                   {unpaidBills.length === 0 ? (
                     <p className="muted">
-                      暂无已记录的待还账单；没有账单信息不代表没有欠款。
+                      {t(
+                        "这里还没有待还账单。如果卡里有欠款，请先到“账户”填写本期账单。",
+                      )}
                     </p>
                   ) : (
                     unpaidBills
@@ -1046,46 +1243,67 @@ function App() {
                               <CreditCard size={22} />
                             </div>
                             <div className="bill-info">
-                              <strong>{a.name}</strong>
+                              {page === "overview" ? (
+                                <button
+                                  className="bill-overview-link"
+                                  onClick={() => navigate("bills")}
+                                >
+                                  {a.name}
+                                </button>
+                              ) : (
+                                <strong>{a.name}</strong>
+                              )}
                               <small
                                 className={`due-label ${dayDistance(today, bill.due_on) <= 3 ? "urgent" : ""}`}
                               >
                                 {dueLabel(today, bill.due_on)} · {bill.due_on}
                               </small>
-                              <small>
-                                账单 {money(bill.statement_cents, a.currency)} ·
-                                总欠款 {money(a.balance_cents, a.currency)}
-                              </small>
+                              {page !== "overview" && (
+                                <small>
+                                  {t("本期账单")}{" "}
+                                  {money(bill.statement_cents, a.currency)}
+                                  {t("· 这张卡总共欠")}{" "}
+                                  {money(a.balance_cents, a.currency)}
+                                </small>
+                              )}
                             </div>
                             <div className="bill-amount">
                               <strong>
+                                <span className="remaining-label">
+                                  {t("剩余应还")}{" "}
+                                </span>
                                 {money(bill.remaining_cents, a.currency)}
                               </strong>
-                              <button
-                                className="quiet"
-                                disabled={busy || !!pending}
-                                onClick={() => {
-                                  open("statement", a);
-                                  setSelectedBill(bill);
-                                }}
-                              >
-                                核对
-                              </button>
-                              <button
-                                disabled={busy || !!pending}
-                                onClick={() => {
-                                  open("record");
-                                  setRecordKind("repayment");
-                                  setRecordSource(
-                                    data.accounts.find(
-                                      (account) => account.kind === "asset",
-                                    )?.id ?? "",
-                                  );
-                                  setRecordTarget(a.id);
-                                }}
-                              >
-                                记还款 <ArrowRight size={14} />
-                              </button>
+                              {page !== "overview" && (
+                                <>
+                                  <button
+                                    className="quiet"
+                                    disabled={busy || !!pending}
+                                    onClick={() => {
+                                      open("statement", a);
+                                      setSelectedBill(bill);
+                                    }}
+                                  >
+                                    {t("核对")}
+                                  </button>
+                                  <button
+                                    disabled={busy || !!pending}
+                                    onClick={() => {
+                                      open("record");
+                                      setRecordKind("repayment");
+                                      setRecordSource(
+                                        data.accounts.find(
+                                          (account) => account.kind === "asset",
+                                        )?.id ?? "",
+                                      );
+                                      setRecordTarget(a.id);
+                                    }}
+                                  >
+                                    {t("记还款")}
+                                    <ArrowRight size={14} />
+                                  </button>
+                                </>
+                              )}
                             </div>
                           </div>
                         );
@@ -1093,113 +1311,135 @@ function App() {
                   )}
                 </section>
               </div>
-              <section
-                className="overview-shortcuts"
-                hidden={page !== "overview"}
-                aria-label="常用操作"
-              >
-                <button onClick={() => navigate("accounts")}>
-                  <Wallet size={20} />
-                  <span>
-                    账户与对账
-                    <small>
-                      {data.accounts.length} 个账户 · 按银行余额核对
-                    </small>
-                  </span>
-                  <ChevronRight size={16} />
-                </button>
-                <button onClick={() => navigate("history")}>
-                  <ListFilter size={20} />
-                  <span>
-                    收支明细<small>本月已记录收支与最近交易</small>
-                  </span>
-                  <ChevronRight size={16} />
-                </button>
-              </section>
               <div hidden={page !== "accounts"}>
                 <div className="section-title">
                   <div>
-                    <h2>我的账户</h2>
-                    <small>余额、欠款与预留分开管理</small>
+                    <h2>{t("我的账户")}</h2>
+                    <small>{t("日常账户看余额，信用卡看欠款")}</small>
                   </div>
                   <button
                     className="quiet"
                     disabled={busy || !!pending}
                     onClick={() => open("account")}
                   >
-                    <Plus size={16} /> 添加
+                    <Plus size={16} />
+                    {t("添加")}
                   </button>
                 </div>
-                <div className="account-grid">
-                  {data.accounts.map((a) => (
-                    <section className="panel account" key={a.id}>
-                      <div className="account-top">
-                        <strong>{a.name}</strong>
-                        <span>
-                          {a.kind === "asset" ? "资产" : "信用卡"} ·{" "}
-                          {a.currency}
-                        </span>
-                      </div>
-                      <h3>{money(a.balance_cents, a.currency)}</h3>
-                      <small>
-                        {a.kind === "asset"
-                          ? `预留 ${money(a.reserved_cents, a.currency)}`
-                          : "当前总欠款，与本期应还不同"}
-                      </small>
-                      <div className="actions">
-                        <button
-                          onClick={() => open("reconcile", a)}
-                          disabled={busy || !!pending}
-                        >
-                          对账
-                        </button>
-                        <button
-                          onClick={() =>
-                            open(
-                              a.kind === "asset" ? "reserve" : "statement",
-                              a,
-                            )
-                          }
-                          disabled={busy || !!pending}
-                        >
-                          {a.kind === "asset" ? "设置预留" : "添加本期账单"}
-                        </button>
-                      </div>
-                    </section>
-                  ))}
-                </div>
+                {(
+                  [
+                    { kind: "asset", label: t("日常账户"), Icon: Wallet },
+                    { kind: "liability", label: t("信用卡"), Icon: CreditCard },
+                  ] as const
+                ).map((group) => (
+                  <section className="account-section" key={group.kind}>
+                    <div className="account-group-heading">
+                      <h3>
+                        <group.Icon size={18} />
+                        {group.label}
+                      </h3>
+                      <span>
+                        {
+                          data.accounts.filter((a) => a.kind === group.kind)
+                            .length
+                        }{" "}
+                        {t("个")}
+                      </span>
+                    </div>
+                    <div className="account-grid">
+                      {data.accounts
+                        .filter((a) => a.kind === group.kind)
+                        .map((a) => (
+                          <section className="panel account" key={a.id}>
+                            <div className="account-top">
+                              <strong>{a.name}</strong>
+                              <span>
+                                {a.kind === "asset"
+                                  ? t("日常账户")
+                                  : t("信用卡")}{" "}
+                                · {a.currency}
+                              </span>
+                            </div>
+                            <h3>{money(a.balance_cents, a.currency)}</h3>
+                            <small>
+                              {a.kind === "asset"
+                                ? t("已留好 {0}", {
+                                    0: money(a.reserved_cents, a.currency),
+                                  })
+                                : t("这张卡总共欠的钱，不等于这期要还的金额")}
+                            </small>
+                            <div className="actions">
+                              <button
+                                onClick={() => open("reconcile", a)}
+                                disabled={busy || !!pending}
+                              >
+                                {a.kind === "asset"
+                                  ? t("核对余额")
+                                  : t("核对总欠款")}
+                              </button>
+                              <button
+                                onClick={() =>
+                                  open(
+                                    a.kind === "asset"
+                                      ? "reserve"
+                                      : "statement",
+                                    a,
+                                  )
+                                }
+                                disabled={busy || !!pending}
+                              >
+                                {a.kind === "asset"
+                                  ? t("留好一笔钱")
+                                  : t("添加本期账单")}
+                              </button>
+                            </div>
+                          </section>
+                        ))}
+                    </div>
+                  </section>
+                ))}
               </div>
               <div hidden={page !== "history"}>
                 <div className="section-title">
-                  <h2>本月已记录收支</h2>
+                  <h2>{t("本月已记录收支")}</h2>
                 </div>
                 <section className="panel">
                   <p className="muted">
-                    开始记录：{data.profile.started_on}；本月覆盖从{" "}
+                    {t("开始记录：")}
+                    {data.profile.started_on}
+                    {t("；本月覆盖从")}{" "}
                     {data.profile.started_on > `${today.slice(0, 7)}-01`
                       ? data.profile.started_on
                       : `${today.slice(0, 7)}-01`}{" "}
-                    到 {today}
-                    ，另含已补录的历史。完整性尚未确认，未记录不等于没有消费。
+                    {t("到")} {today}
+                    {t(
+                      "。补记的旧交易也会按发生日期统计。这个月还没核对完整，没记下来不代表没花过。",
+                    )}
                   </p>
                   {(["CAD", "CNY"] as Currency[]).map((c) => {
                     const m = data.monthly.find((m) => m.currency === c);
                     return (
                       <div className="stat" key={c}>
                         <span>{c}</span>
-                        <span>收入 {money(m?.income_cents ?? 0, c)}</span>
-                        <span>支出 {money(m?.expense_cents ?? 0, c)}</span>
+                        <span>
+                          {t("收入")} {money(m?.income_cents ?? 0, c)}
+                        </span>
+                        <span>
+                          {t("支出")} {money(m?.expense_cents ?? 0, c)}
+                        </span>
                       </div>
                     );
                   })}
                 </section>
                 <div className="section-title">
-                  <h2>最近交易</h2>
-                  <span>最近 100 笔</span>
+                  <h2>{t("最近交易")}</h2>
+                  <span>{t("最近 100 笔")}</span>
                 </div>
                 <section className="panel history">
                   {data.transactions.length === 0 ? (
-                    <p className="muted">从第一笔开始，慢慢建立清楚的账。</p>
+                    <p className="muted">
+                      {t("从第一笔开始，慢慢建立清楚的账。")}
+                    </p>
                   ) : (
                     data.transactions.map((tx) => (
                       <div
@@ -1208,22 +1448,26 @@ function App() {
                       >
                         <div>
                           <strong>
-                            {labels[tx.kind]} ·{" "}
+                            {t(labels[tx.kind])} ·{" "}
                             {
                               data.accounts.find((a) => a.id === tx.source_id)
                                 ?.name
                             }
                           </strong>
                           <small>
-                            {tx.occurred_on} · {tx.note || "无备注"}
+                            {tx.occurred_on} · {tx.note || t("无备注")}
                             {tx.target_id
                               ? ` → ${data.accounts.find((a) => a.id === tx.target_id)?.name}`
                               : ""}
                           </small>
                           {!tx.source_effect && (
-                            <small>历史补录 · 不再次改变来源账户余额</small>
+                            <small>
+                              {t("历史补录 · 不再次改变来源账户余额")}
+                            </small>
                           )}
-                          {tx.reversed_at && <small>已撤销，原记录保留</small>}
+                          {tx.reversed_at && (
+                            <small>{t("已撤销，原记录保留")}</small>
+                          )}
                         </div>
                         <div>
                           <strong>
@@ -1233,7 +1477,7 @@ function App() {
                           </strong>
                           {tx.target_currency && (
                             <small>
-                              到账{" "}
+                              {t("到账")}{" "}
                               {money(tx.target_cents ?? 0, tx.target_currency)}
                             </small>
                           )}
@@ -1243,7 +1487,7 @@ function App() {
                               disabled={busy || demo || !!pending}
                               onClick={() => void reverse(tx.id)}
                             >
-                              撤销
+                              {t("撤销")}
                             </button>
                           )}
                         </div>
@@ -1252,7 +1496,7 @@ function App() {
                   )}
                 </section>
               </div>
-              <nav className="bottom-nav" aria-label="主要导航">
+              <nav className="bottom-nav" aria-label={t("主要导航")}>
                 {(
                   [
                     "overview",
@@ -1294,7 +1538,7 @@ function App() {
                         <Icon size={22} />
                       </span>
                       <span>
-                        {item === "record" ? "记一笔" : pageLabels[item]}
+                        {item === "record" ? t("记一笔") : t(pageLabels[item])}
                       </span>
                     </button>
                   );
@@ -1322,34 +1566,96 @@ function App() {
             <div className="dialog-heading">
               <h2 id="dialog-title">
                 {modal === "record"
-                  ? "记一笔"
+                  ? t("记一笔")
                   : modal === "account"
-                    ? "添加账户"
+                    ? t("添加账户")
                     : modal === "statement"
-                      ? `${selected?.name} · ${selectedBill ? "核对账单" : "添加账单"}`
+                      ? `${selected?.name} · ${selectedBill ? t("核对账单") : t("添加账单")}`
                       : modal === "reserve"
-                        ? `${selected?.name} · 预留资金`
-                        : `${selected?.name} · 对账`}
+                        ? t("{0} · 留好一笔钱", { 0: selected?.name })
+                        : modal === "goal"
+                          ? t("存钱目标")
+                          : t("{0} · 核对余额", { 0: selected?.name })}
               </h2>
               <button
                 type="button"
                 className="quiet dialog-close"
-                aria-label="关闭表单"
+                aria-label={t("关闭表单")}
                 disabled={busy || !!pending}
                 onClick={() => setModal(null)}
               >
                 <X size={21} />
               </button>
             </div>
-            {demo && (
+            {demo && modal !== "goal" && (
               <p className="demo-note">
-                虚构数据预览 · 可以试填，不会保存或发送到账户
+                {t("虚构数据 · 可以试填，真实账户不会变化")}
               </p>
             )}
-            <form onSubmit={submitModal}>
+            <form
+              className={modal === "record" ? "record-form" : undefined}
+              onSubmit={submitModal}
+            >
+              {modal === "goal" && localPreview && (
+                <>
+                  <p className="muted">
+                    {t("本地试填，刷新后恢复。真实账户不会变化。")}
+                  </p>
+                  <label>
+                    {t("给目标起个名字")}
+                    <input
+                      name="goalName"
+                      defaultValue={goal?.name ?? t("备用金")}
+                      maxLength={40}
+                      required
+                    />
+                  </label>
+                  <label>
+                    {t("从哪个日常账户留钱")}
+                    <select
+                      name="goalAccount"
+                      defaultValue={
+                        goal?.accountId ??
+                        data.accounts.find((a) => a.kind === "asset")?.id
+                      }
+                    >
+                      {data.accounts
+                        .filter((a) => a.kind === "asset")
+                        .map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name}（{a.currency}）
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    {t("总共想存多少（账户币种）")}
+                    <input
+                      name="goalTarget"
+                      inputMode="decimal"
+                      defaultValue={goal ? String(goal.target / 100) : ""}
+                      required
+                    />
+                  </label>
+                  <label>
+                    {t("现在已经留好多少")}
+                    <input
+                      name="goalAllocated"
+                      inputMode="decimal"
+                      defaultValue={String((goal?.allocated ?? 0) / 100)}
+                      required
+                    />
+                  </label>
+                  <p className="muted">
+                    {t(
+                      "只算你专门留给这个目标的钱。它会放进账户预留里，不算消费，也不会重复扣掉。",
+                    )}
+                  </p>
+                </>
+              )}
               {modal === "record" && (
                 <>
-                  <div className="tabs record-tabs" aria-label="交易类型">
+                  <div className="tabs record-tabs" aria-label={t("交易类型")}>
                     {[
                       "expense",
                       "income",
@@ -1365,12 +1671,17 @@ function App() {
                         onClick={() => changeRecordKind(kind)}
                         disabled={busy || !!pending}
                       >
-                        {labels[kind]}
+                        {t(labels[kind])}
                       </button>
                     ))}
                   </div>
                   <label className="amount-field">
-                    {transfer ? "付款金额" : "金额"} · {source?.currency}
+                    {recordKind === "repayment"
+                      ? t("这次实际还了多少")
+                      : transfer
+                        ? t("转出金额")
+                        : t("金额")}{" "}
+                    · {source?.currency}
                     <input
                       name="amount"
                       inputMode="decimal"
@@ -1380,30 +1691,55 @@ function App() {
                     />
                   </label>
                   <label>
-                    {transfer ? "付款账户" : "账户"}
+                    {recordKind === "repayment"
+                      ? t("从哪张银行卡还")
+                      : transfer
+                        ? t("从哪个账户转出")
+                        : recordKind === "income"
+                          ? t("钱收到哪里")
+                          : recordKind === "refund"
+                            ? t("退到哪个账户")
+                            : t("用哪个账户付的")}
                     <select
                       required
                       value={recordSource}
                       onChange={(e) => setRecordSource(e.target.value)}
                     >
-                      {data.accounts
-                        .filter((a) => !transfer || a.kind === "asset")
-                        .map((a) => (
-                          <option value={a.id} key={a.id}>
-                            {a.name} ({a.currency})
-                          </option>
-                        ))}
+                      {(["asset", "liability"] as const).map((kind) => {
+                        const accounts = data.accounts.filter(
+                          (a) =>
+                            a.kind === kind &&
+                            (!(transfer || recordKind === "income") ||
+                              a.kind === "asset"),
+                        );
+                        return accounts.length ? (
+                          <optgroup
+                            key={kind}
+                            label={
+                              kind === "asset" ? t("日常账户") : t("信用卡")
+                            }
+                          >
+                            {accounts.map((a) => (
+                              <option value={a.id} key={a.id}>
+                                {a.name} ({a.currency})
+                              </option>
+                            ))}
+                          </optgroup>
+                        ) : null;
+                      })}
                     </select>
                   </label>
                   {transfer && (
                     <label>
-                      目标账户
+                      {recordKind === "repayment"
+                        ? t("还到哪张信用卡")
+                        : t("转到哪个账户")}
                       <select
                         required
                         value={recordTarget}
                         onChange={(e) => setRecordTarget(e.target.value)}
                       >
-                        <option value="">请选择</option>
+                        <option value="">{t("请选择")}</option>
                         {data.accounts
                           .filter(
                             (a) =>
@@ -1424,7 +1760,8 @@ function App() {
                     target &&
                     source?.currency !== target.currency && (
                       <label>
-                        实际到账 / 减少欠款金额 · {target.currency}
+                        {t("实际到账 / 减少欠款金额 ·")}
+                        {target.currency}
                         <input
                           name="targetAmount"
                           inputMode="decimal"
@@ -1433,7 +1770,7 @@ function App() {
                       </label>
                     )}
                   <label>
-                    交易日期
+                    {t("哪天发生的")}
                     <input
                       name="date"
                       type="date"
@@ -1443,18 +1780,19 @@ function App() {
                     />
                   </label>
                   <label>
-                    备注
+                    {t("备注")}
                     <input name="note" maxLength={500} />
                   </label>
                   <details className="form-details">
-                    <summary>补记历史 / 还款分配规则</summary>
+                    <summary>{t("补以前的账？点这里看看")}</summary>
                     <label className="checkbox">
                       <input type="checkbox" name="historyOnly" />{" "}
-                      只补历史，不改变当前余额
+                      {t("这笔已经包含在银行余额里，只补记录")}
                     </label>
                     <p className="muted">
-                      日期早于账户最新起始 /
-                      对账日时自动只补历史。同一天的旧交易请勾选上项，避免重复扣款。还款按最早到期的未还账单分配，超额部分保留为未分配还款。
+                      {t(
+                        "比最近一次余额核对更早的记录，不会再扣一次钱。同一天补记、且银行余额已经包含这笔时，请勾选上面一项。还款先抵最早到期的账单；多还的部分只减少总欠款。",
+                      )}
                     </p>
                   </details>
                 </>
@@ -1462,25 +1800,27 @@ function App() {
               {modal === "account" && (
                 <>
                   <label>
-                    账户名称
+                    {t("账户名称")}
                     <input name="name" required maxLength={60} />
                   </label>
                   <label>
-                    类型
+                    {t("类型")}
                     <select name="kind">
-                      <option value="asset">资产</option>
-                      <option value="liability">信用卡</option>
+                      <option value="asset">
+                        {t("日常账户（银行卡 / 现金）")}
+                      </option>
+                      <option value="liability">{t("信用卡")}</option>
                     </select>
                   </label>
                   <label>
-                    币种
+                    {t("币种")}
                     <select name="currency">
                       <option>CAD</option>
                       <option>CNY</option>
                     </select>
                   </label>
                   <label>
-                    当前余额 / 总欠款
+                    {t("银行卡余额 / 信用卡总欠款")}
                     <input
                       name="balance"
                       inputMode="decimal"
@@ -1488,17 +1828,27 @@ function App() {
                       required
                     />
                   </label>
-                  <p className="muted">作为今天的起始余额，不计收入或消费。</p>
+                  <p className="muted">
+                    {t(
+                      "把今天银行显示的数填进来，作为记账起点，不算收入或消费。",
+                    )}
+                  </p>
                 </>
               )}
               {modal === "reconcile" && selected && (
                 <>
                   <p>
-                    系统数：{money(selected.balance_cents, selected.currency)}
-                    。按今天银行显示的实际数对账，差额有记录，不自动计收支。
+                    {t("这里记的是")}{" "}
+                    {money(selected.balance_cents, selected.currency)}
+                    {t(
+                      "。填入今天银行显示的实际数，就能继续记账。差额会留下记录，不算收入或消费。",
+                    )}
                   </p>
                   <label>
-                    实际余额 / 当前总欠款 · {selected.currency}
+                    {selected.kind === "asset"
+                      ? t("银行现在显示的余额")
+                      : t("这张卡现在总共欠多少")}{" "}
+                    · {selected.currency}
                     <input
                       name="balance"
                       inputMode="decimal"
@@ -1507,25 +1857,30 @@ function App() {
                     />
                   </label>
                   <label>
-                    差额说明
+                    {t("为什么有差别（可不填）")}
                     <input
                       name="note"
                       maxLength={500}
-                      placeholder="例如：漏记几天，按银行余额继续"
+                      placeholder={t("例如：漏记几天，按银行余额继续")}
                     />
                   </label>
                   <p className="muted">
-                    信用卡总欠款对账不会自动改变本期应还。若同时有人记账，版本冲突会要求重新核对。
+                    {t(
+                      "核对卡的总欠款，不会改动这期还剩多少。记账期间余额有变化时，会提醒你重新确认。",
+                    )}
                   </p>
                 </>
               )}
               {modal === "reserve" && selected && (
                 <>
                   <p>
-                    预留给学费、生活费或储蓄；信用卡还款由还款清单另扣，不要在这里重复预留。
+                    {t(
+                      "学费、生活费或储蓄，想留着不随便花的钱放在这里。信用卡本期还款会另外留出，别重复算。",
+                    )}
                   </p>
                   <label>
-                    预留总金额 · {selected.currency}
+                    {t("准备留好多少钱 ·")}
+                    {selected.currency}
                     <input
                       name="reserved"
                       inputMode="decimal"
@@ -1538,7 +1893,8 @@ function App() {
               {modal === "statement" && selected && (
                 <>
                   <label>
-                    本期原始账单金额 · {selected.currency}
+                    {t("银行这期账单总额 ·")}
+                    {selected.currency}
                     <input
                       name="statement"
                       inputMode="decimal"
@@ -1551,7 +1907,8 @@ function App() {
                     />
                   </label>
                   <label>
-                    截至现在剩余应还 · {selected.currency}
+                    {t("这期还剩多少没还 ·")}
+                    {selected.currency}
                     <input
                       name="remaining"
                       inputMode="decimal"
@@ -1564,7 +1921,7 @@ function App() {
                     />
                   </label>
                   <label>
-                    银行给出的实际到期日期
+                    {t("这期最晚哪天还")}
                     <input
                       name="due"
                       type="date"
@@ -1574,14 +1931,21 @@ function App() {
                   </label>
                   <p className="muted">
                     {selectedBill
-                      ? "按银行实际结果更正本期账单，有审计记录，不改变总欠款。"
-                      : "新增一期账单；请勿重复添加同一期。已支付部分直接反映在剩余应还中。"}
+                      ? t(
+                          "按银行显示的数修改这期账单。只改这期应还，不改卡的总欠款。",
+                        )
+                      : t(
+                          "一张新账单填一次就好。如果已经还过一部分，剩余应还只填还没还的数。",
+                        )}
                   </p>
                 </>
               )}
               {notice && (
-                <div className="warning" role="status">
-                  {notice}
+                <div
+                  className={`warning${noticeSuccess ? " notice-success" : ""}`}
+                  role="status"
+                >
+                  {translateMessage(notice, language)}
                 </div>
               )}
               <div className="actions dialog-actions">
@@ -1590,19 +1954,20 @@ function App() {
                   disabled={busy || !!pending}
                   onClick={() => setModal(null)}
                 >
-                  关闭
+                  {t("关闭")}
                 </button>
                 <button
                   className="primary"
-                  disabled={busy || !!pending || demo}
+                  disabled={busy || !!pending || (demo && modal !== "goal")}
                 >
                   {busy ? (
-                    "正在保存…"
-                  ) : demo ? (
-                    "演示模式 · 不保存"
+                    t("正在保存…")
+                  ) : demo && modal !== "goal" ? (
+                    t("演示模式 · 不保存")
                   ) : (
                     <>
-                      <CheckCircle2 size={16} /> 确认保存
+                      <CheckCircle2 size={16} />{" "}
+                      {modal === "goal" ? t("更新本地目标") : t("确认保存")}
                     </>
                   )}
                 </button>
@@ -1611,9 +1976,7 @@ function App() {
           </section>
         </dialog>
       )}
-      <footer>
-        金额分别以 CAD / CNY 原币种保存 · 余额与统计以已确认记录为准
-      </footer>
+      <footer>{t("CAD 和 CNY 分开计算 · 以已同步的记录为准")}</footer>
     </div>
   );
 }

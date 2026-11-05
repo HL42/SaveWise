@@ -62,10 +62,15 @@ export function cents(value: string): number {
     throw new Error("金额超出范围");
   return negative ? -result : result;
 }
-export const money = (value: number, currency: Currency) =>
-  new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format(
-    value / 100,
-  );
+export const money = (
+  value: number,
+  currency: Currency,
+  language: "zh" | "en" = "zh",
+) =>
+  new Intl.NumberFormat(language === "zh" ? "zh-CN" : "en-CA", {
+    style: "currency",
+    currency,
+  }).format(value / 100);
 export function localDay(timezone = "America/Toronto"): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
@@ -82,8 +87,18 @@ export function dayDistance(today: string, due: string): number {
       86_400_000,
   );
 }
-export function dueLabel(today: string, due: string): string {
+export function dueLabel(
+  today: string,
+  due: string,
+  language: "zh" | "en" = "zh",
+): string {
   const days = dayDistance(today, due);
+  if (language === "en")
+    return days < 0
+      ? `${-days} day${days === -1 ? "" : "s"} overdue`
+      : days === 0
+        ? "Due today"
+        : `Due in ${days} day${days === 1 ? "" : "s"}`;
   return days < 0
     ? `逾期 ${-days} 天`
     : days === 0
